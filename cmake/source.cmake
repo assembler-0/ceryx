@@ -1,0 +1,96 @@
+# ============================================================================
+# Sources Organization
+# ============================================================================
+file(GLOB ARCH_SOURCES "arch/x86_64/*.c")
+file(GLOB_RECURSE ARCH_FEATURE_SOURCES "arch/x86_64/features/*.c")
+file(GLOB_RECURSE ARCH_GDT_SOURCES "arch/x86_64/gdt/*.c")
+file(GLOB_RECURSE ARCH_DRIVER_SOURCES "arch/x86_64/drivers/*.c")
+file(GLOB_RECURSE ARCH_IDT_SOURCES "arch/x86_64/idt/*.c")
+file(GLOB_RECURSE ARCH_MM_SOURCES "arch/x86_64/mm/*.c")
+file(GLOB_RECURSE ARCH_BOOT_SOURCES "arch/x86_64/boot/*.c")
+file(GLOB_RECURSE ARCH_IRQ_SOURCES "arch/x86_64/irq/*.c")
+file(GLOB_RECURSE ARCH_ENTRY_SOURCES "arch/x86_64/entry/*.c")
+file(GLOB_RECURSE ARCH_LIB_SOURCES "arch/x86_64/lib/*.c")
+file(GLOB_RECURSE ARCH_ASM_SOURCES "arch/x86_64/*.asm")
+list(APPEND ARCH_SOURCES
+    ${ARCH_FEATURE_SOURCES}
+    ${ARCH_GDT_SOURCES}
+    ${ARCH_DRIVER_SOURCES}
+    ${ARCH_IDT_SOURCES}
+    ${ARCH_MM_SOURCES}
+    ${ARCH_IRQ_SOURCES}
+    ${ARCH_BOOT_SOURCES}
+    ${ARCH_ENTRY_SOURCES}
+    ${ARCH_LIB_SOURCES}
+    ${ARCH_ASM_SOURCES}
+)
+file(GLOB_RECURSE INIT_SOURCES "init/*.c")
+file(GLOB KERNEL_SOURCES "ceryx/*.c")
+file(GLOB_RECURSE KERNEL_BUILTIN_SOURCES "ceryx/builtin/*.c")
+file(GLOB_RECURSE KERNEL_SCHED_SOURCES "ceryx/sched/*.c")
+file(GLOB_RECURSE KERNEL_FKX_SOURCES "ceryx/fkx/*.c")
+file(GLOB_RECURSE KERNEL_ASRX_SOURCES "ceryx/asrx/*.c")
+file(GLOB KERNEL_SYSINTF_CORE_SOURCES "ceryx/sysintf/*.c")
+file(GLOB_RECURSE KERNEL_ASM_SOURCES "ceryx/*.asm")
+file(GLOB_RECURSE KERNEL_SYSINTF_SOURCES "ceryx/sysintf/core/*.c")
+list(APPEND KERNEL_SOURCES
+    ${KERNEL_SCHED_SOURCES}
+    ${KERNEL_ASRX_SOURCES}
+    ${KERNEL_FKX_SOURCES}
+    ${KERNEL_SYSINTF_CORE_SOURCES}
+    ${KERNEL_SYSINTF_SOURCES}
+    ${KERNEL_BUILTIN_SOURCES}
+    ${KERNEL_ASM_SOURCES}
+)
+file(GLOB DRIVER_SOURCES "drivers/*.c")
+file(GLOB_RECURSE DRIVER_ACPI_SOURCES "drivers/acpi/*.c")
+file(GLOB_RECURSE DRIVER_BUILTINS_SOURCES "drivers/builtins/*.c")
+file(GLOB_RECURSE DRIVER_QEMU_SOURCES "drivers/qemu/*.c")
+file(GLOB_RECURSE DRIVER_CHAR_SOURCES "drivers/char/*.c")
+file(GLOB_RECURSE DRIVER_PCI_SOURCES "drivers/pci/*.c")
+file(GLOB_RECURSE DRIVER_TIMER_SOURCES "drivers/timer/*.c")
+file(GLOB_RECURSE DRIVER_DRM_SOURCES "drivers/graphics/drm/*.c")
+list(APPEND DRIVER_SOURCES
+    ${DRIVER_ACPI_SOURCES}
+    ${DRIVER_BUILTINS_SOURCES}
+    ${DRIVER_QEMU_SOURCES}
+    ${DRIVER_DRM_SOURCES}
+    ${DRIVER_TIMER_SOURCES}
+    ${DRIVER_CHAR_SOURCES}
+    ${DRIVER_PCI_SOURCES}
+)
+file(GLOB LIB_SOURCES "lib/*.c")
+file(GLOB_RECURSE LIB_FONT_SOURCES "lib/fonts/*.c")
+list(APPEND LIB_SOURCES
+    ${LIB_FONT_SOURCES}
+)
+file(GLOB MM_SOURCES "mm/*.c")
+file(GLOB_RECURSE MM_SAN_SOURCES "mm/san/*.c")
+list(APPEND MM_SOURCES
+    ${MM_SAN_SOURCES}
+)
+file(GLOB CRYPTO_SOURCES "crypto/*.c" "crypto/sha/*.c")
+file(GLOB FS_SOURCES "fs/*.c")
+
+# ============================================================================
+# Build Include Directories
+# ============================================================================
+include_directories(SYSTEM
+        .
+        include
+        include/lib
+)
+
+# ============================================================================
+# Final Source List
+# ============================================================================
+set(CERYX_SOURCES
+        ${INIT_SOURCES}
+        ${KERNEL_SOURCES}
+        ${LIB_SOURCES}
+        ${DRIVER_SOURCES}
+        ${MM_SOURCES}
+        ${ARCH_SOURCES}
+        ${CRYPTO_SOURCES}
+        ${FS_SOURCES}
+)

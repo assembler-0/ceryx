@@ -1,0 +1,5 @@
+menu "x86_64 Architecture Configuration" {
+    option FB_REQUEST : bool = true {
+        label "Limine framebuffer request"
+    }
+}
