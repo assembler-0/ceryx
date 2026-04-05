@@ -1,10 +1,8 @@
 #include <FoundationKitOsl/Osl.hpp>
 #include <FoundationKitCxxStl/Base/Types.hpp>
 #include <FoundationKitCxxStl/Base/CompilerBuiltins.hpp>
-#include <FoundationKitMemory/MemoryCore.hpp>
-#include <FoundationKitMemory/GlobalAllocator.hpp>
-
-#include "drivers/debugcon.hpp"
+#include <lib/linearfb.hpp>
+#include <FoundationKitMemory/MemoryOperations.hpp>
 
 using namespace FoundationKitCxxStl;
 
@@ -26,6 +24,10 @@ extern "C" {
         }
         return dest;
     }
+
+    void* memmove(void* dest, const void* src, usize size) {
+        return FoundationKitMemory::MemoryMove(dest, src, size);
+    }
 }
 
 // 4. Global sized delete operator (C++14)
@@ -41,14 +43,13 @@ namespace FoundationKitOsl {
     extern "C" {
 
         [[noreturn]] void OslBug(const char* msg) {
-            debugcon_puts(msg);
-            for (;;) {
-                __asm__ volatile("hlt");
-            }
+            linearfb_console_puts("ceryx: kernel panic:\n");
+            linearfb_console_puts(msg);
+            for (;;) { __asm__ volatile("cli; hlt"); }
         }
 
         void OslLog(const char* msg) {
-            debugcon_puts(msg);
+            linearfb_console_puts(msg);
         }
 
         bool OslIsSimdEnabled() {

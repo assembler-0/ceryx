@@ -1,10 +1,10 @@
-#include <drivers/debugcon.hpp>
 #include <mm/pmm.hpp>
 #include <mm/kheap.hpp>
 #include <FoundationKitCxxStl/Base/Vector.hpp>
 #include <FoundationKitCxxStl/Base/Optional.hpp>
 #include <FoundationKitMemory/GlobalAllocator.hpp>
 #include <FoundationKitMemory/ObjectAllocator.hpp>
+#include <lib/linearfb.hpp>
 
 using namespace ceryx::mm;
 using namespace FoundationKitCxxStl;
@@ -19,7 +19,9 @@ struct MyObject {
 };
 
 extern "C" void start_kernel() {
-    debugcon_puts("ceryx demonstration kernel initializing\n");
+    linearfb_console_init();
+    FK_LOG_INFO("ceryx (R) - FoundationKit demonstration kernel.");
+    FK_LOG_INFO("ceryx: entering bootstrap");
     FK_LOG_INFO("FoundationKit: Subsystem discovery starting...");
 
     // 1. Initialize Physical Memory Manager (Buddy Allocator)
