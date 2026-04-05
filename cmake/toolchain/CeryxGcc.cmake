@@ -1,5 +1,5 @@
 # ============================================================================
-# AeroSync Toolchain for Host GCC (no idea why would you want this)
+# Ceryx Toolchain for Host GCC (no idea why would you want this)
 # ============================================================================
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)

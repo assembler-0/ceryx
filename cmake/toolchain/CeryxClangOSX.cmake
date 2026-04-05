@@ -1,22 +1,26 @@
 # ============================================================================
-# AeroSync Toolchain for LLVM/Clang (Cross-Compilation)
+# Ceryx Toolchain for LLVM/Clang (Cross-Compilation)
 # ============================================================================
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 if(NOT DEFINED ENV{CLANG_VERSION})
-    set(CMAKE_C_COMPILER clang)
-    set(CMAKE_CXX_COMPILER clang++)
+    set(CMAKE_C_COMPILER /usr/local/Cellar/llvm/22.1.2/bin/clang)
+    set(CMAKE_CXX_COMPILER /usr/local/Cellar/llvm/22.1.2/bin/clang++)
 else()
     set(CMAKE_ENV_CLANG_VERSION "$ENV{CLANG_VERSION}")
-    set(CMAKE_C_COMPILER clang-${CMAKE_ENV_CLANG_VERSION})
-    set(CMAKE_CXX_COMPILER clang++-${CMAKE_ENV_CLANG_VERSION})
+    set(CMAKE_C_COMPILER /usr/local/Cellar/llvm/22.1.2/bin/clang-${CMAKE_ENV_CLANG_VERSION})
+    set(CMAKE_CXX_COMPILER /usr/local/Cellar/llvm/22.1.2/bin/clang++-${CMAKE_ENV_CLANG_VERSION})
 endif()
 
 set(CMAKE_ASM_NASM_COMPILER nasm)
-set(CMAKE_LINKER lld)
 set(CMAKE_C_LINK_EXECUTABLE "<CMAKE_LINKER> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
 set(CMAKE_CXX_LINK_EXECUTABLE "<CMAKE_LINKER> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
+set(CMAKE_LINKER /usr/local/Cellar/lld/22.1.2/bin/ld.lld)
+set(CMAKE_AR /usr/local/Cellar/llvm/22.1.2/bin/llvm-ar)
+set(CMAKE_RANLIB /usr/local/Cellar/llvm/22.1.2/bin/llvm-ranlib)
+
 set(COMPILER_IDENTIFIER "clang")
 set(LINKER_IDENTIFIER "lld")
 

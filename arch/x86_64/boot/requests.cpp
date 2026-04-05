@@ -1,6 +1,5 @@
-#include <ceryx/base.h>
-#include <arch/x86_64/boot/requests.h>
-#include <arch/x86_64/boot/limine.h>
+#include <arch/x86_64/boot/requests.hpp>
+#include <arch/x86_64/boot/limine.hpp>
 
 // Set Limine Request Start Marker
 __attribute__((used,
@@ -10,12 +9,10 @@ __attribute__((used,
 __attribute__((used, section(".limine_requests"))) static volatile uint64_t
     limine_base_revision[3] = LIMINE_BASE_REVISION(4);
 
-#ifdef CONFIG_FB_REQUEST
 __attribute__((
     used,
     section(".limine_requests"))) volatile struct limine_framebuffer_request
     framebuffer_request = {.id = LIMINE_FRAMEBUFFER_REQUEST_ID, .revision = 0};
-#endif
 
 __attribute__((
     used,
@@ -96,11 +93,7 @@ volatile struct limine_memmap_request *get_memmap_request(void) {
 };
 
 volatile struct limine_framebuffer_request *get_framebuffer_request(void) {
-#ifdef CONFIG_FB_REQUEST
   return &framebuffer_request;
-#else
-  return nullptr;
-#endif
 }
 
 volatile struct limine_paging_mode_request *get_paging_request(void) {

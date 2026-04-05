@@ -10,7 +10,6 @@ if(QEMU_SYSTEM_X86_64)
             COMMAND ${QEMU_SYSTEM_X86_64}
             -M q35,hpet=on,kernel_irqchip=split
             -cpu max,+la57
-            -accel kvm
             -no-reboot -no-shutdown
             -m 4G
             -smp sockets=2,cores=2
@@ -18,7 +17,6 @@ if(QEMU_SYSTEM_X86_64)
             -numa node,nodeid=1,cpus=2-3,memdev=mem1
             -object memory-backend-ram,id=mem0,size=2G
             -object memory-backend-ram,id=mem1,size=2G
-            -bios ${ROM_IMAGE}
             -debugcon file:bootstrap.log
             -serial stdio
             -boot d

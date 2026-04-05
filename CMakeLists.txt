@@ -15,11 +15,14 @@
 cmake_minimum_required(VERSION 3.30)
 project(ceryx
     VERSION 5.4.9
-    LANGUAGES C ASM_NASM
+    LANGUAGES C CXX ASM_NASM
 )
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/toolchain")
+set(FOUNDATIONKIT_BUILD_TESTS OFF)
+
+add_subdirectory(FoundationKit)
 
 # ============================================================================
 # Configuration & Dependencies

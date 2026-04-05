@@ -1,5 +1,0 @@
-title "ceryx system configuration"
-
-generate header "include/ceryx/config.h"
-
-include "arch/x86_64/x86_64.z"

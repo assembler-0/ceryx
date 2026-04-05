@@ -1,5 +1,5 @@
 # ============================================================================
-# AeroSync versioning system
+# Ceryx versioning system
 # ============================================================================
 execute_process(
         COMMAND git describe --dirty --always
@@ -15,7 +15,7 @@ execute_process(
         OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-set(AEROSYNC_RELEASE "0" CACHE STRING "AeroSync release")
-set(AEROSYNC_CANDIDATE "4" CACHE STRING "AeroSync release candidate")
-set(AEROSYNC_ABI_LEVEL "0" CACHE STRING "AeroSync ABI level")
-set(AEROSYNC_CODENAME "Integration" CACHE STRING "AeroSync codename")
+set(CERYX_RELEASE "0" CACHE STRING "Ceryx release")
+set(CERYX_CANDIDATE "4" CACHE STRING "Ceryx release candidate")
+set(CERYX_ABI_LEVEL "0" CACHE STRING "Ceryx ABI level")
+set(CERYX_CODENAME "Integration" CACHE STRING "Ceryx codename")
