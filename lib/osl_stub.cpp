@@ -1,8 +1,9 @@
 #include <FoundationKitOsl/Osl.hpp>
 #include <FoundationKitCxxStl/Base/Types.hpp>
 #include <FoundationKitCxxStl/Base/CompilerBuiltins.hpp>
-#include <lib/linearfb.hpp>
 #include <FoundationKitMemory/Core/MemoryOperations.hpp>
+#include <lib/linearfb.hpp>
+#include <drivers/debugcon.hpp>
 
 using namespace FoundationKitCxxStl;
 
@@ -26,13 +27,14 @@ namespace FoundationKitOsl {
     extern "C" {
 
         [[noreturn]] void OslBug(const char* msg) {
-            linearfb_console_puts("ceryx: kernel panic:\n");
-            linearfb_console_puts(msg);
+            FK_LOG_INFO("ceryx: kernel panic:\n");
+            OslLog(msg);
             for (;;) { __asm__ volatile("cli; hlt"); }
         }
 
         void OslLog(const char* msg) {
             linearfb_console_puts(msg);
+            debugcon_puts(msg);
         }
 
         bool OslIsSimdEnabled() {
@@ -76,6 +78,12 @@ namespace FoundationKitOsl {
             uptr flags;
             __asm__ volatile("pushfq; popq %0" : "=r"(flags));
             return (flags & (1ULL << 9)) != 0;
+        }
+
+        static char hostname[16] = "ceryx 0.01a";
+
+        char* OslGetHostOsName() {
+            return hostname;
         }
 
     } // extern "C"
