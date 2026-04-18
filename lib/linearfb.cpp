@@ -1,7 +1,7 @@
 #include <lib/linearfb.hpp>
 #include <lib/embedded_font.hpp>
 #include <stdint.h>
-#include <FoundationKitMemory/MemoryOperations.hpp>
+#include <FoundationKitMemory/Core/MemoryOperations.hpp>
 #include <arch/x86_64/boot/limine.hpp>
 #include <arch/x86_64/boot/requests.hpp>
 

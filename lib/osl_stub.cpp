@@ -2,41 +2,24 @@
 #include <FoundationKitCxxStl/Base/Types.hpp>
 #include <FoundationKitCxxStl/Base/CompilerBuiltins.hpp>
 #include <lib/linearfb.hpp>
-#include <FoundationKitMemory/MemoryOperations.hpp>
+#include <FoundationKitMemory/Core/MemoryOperations.hpp>
 
 using namespace FoundationKitCxxStl;
 
 extern "C" {
     // 3. Basic memory functions (Compiler emits calls to these)
     void* memset(void* dest, int ch, usize count) {
-        auto* ptr = static_cast<unsigned char*>(dest);
-        while (count--) {
-            *ptr++ = static_cast<unsigned char>(ch);
-        }
-        return dest;
+        return FoundationKitMemory::MemorySet(dest, ch, count);
     }
 
     void* memcpy(void* dest, const void* src, usize count) {
-        auto* d = static_cast<unsigned char*>(dest);
-        const auto* s = static_cast<const unsigned char*>(src);
-        while (count--) {
-            *d++ = *s++;
-        }
-        return dest;
+        return FoundationKitMemory::MemoryCopy(dest, src, count);
     }
 
     void* memmove(void* dest, const void* src, usize size) {
         return FoundationKitMemory::MemoryMove(dest, src, size);
     }
 }
-
-// 4. Global sized delete operator (C++14)
-// Removed because FoundationKitCxxAbi/Src/OperatorNew.cpp already defines it.
-#if 0
-void operator delete(void* ptr, usize size) {
-    ::operator delete(ptr);
-}
-#endif
 
 namespace FoundationKitOsl {
 
