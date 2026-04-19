@@ -1,0 +1,52 @@
+#include <ceryx/cpu/Syscall.hpp>
+#include <ceryx/cpu/Gdt.hpp>
+#include <FoundationKitPlatform/Amd64/ControlRegs.hpp>
+#include <drivers/debugcon.hpp>
+
+namespace ceryx::cpu {
+
+using namespace FoundationKitPlatform::Amd64;
+
+extern "C" void SyscallEntry();
+
+extern "C" u64 SyscallDispatch(SyscallRegisters* regs) {
+    return Syscall::Dispatch(regs);
+}
+
+void Syscall::Initialize() {
+    // Enable SYSCALL/SYSRET in EFER
+    ControlRegs::SetEferBits(static_cast<u64>(ControlRegs::EferFlags::Sce));
+
+    // STAR: 
+    // [47:32] -> Kernel CS (SS = CS + 8)
+    // [63:48] -> User CS (SS = CS - 8)
+    
+    // So if we set STAR[63:48] to 0x10 (Kernel Data index), then:
+    // SS = 0x10 + 8 = 0x18 (index 3) -> 0x18 | 3 = 0x1B.
+    // CS = 0x10 + 16 = 0x20 (index 4) -> 0x20 | 3 = 0x23.
+    
+    u64 star = (static_cast<u64>(Gdt::kKernelCodeSelector) << 32) |
+               (static_cast<u64>(0x10 | 3) << 48); // We use 0x10 as base for user, RPL 3
+
+    ControlRegs::WriteMsr(ControlRegs::kMsrStar, star);
+
+    // LSTAR: Entry point
+    ControlRegs::WriteMsr(ControlRegs::kMsrLstar, reinterpret_cast<u64>(SyscallEntry));
+
+    // SFMASK: Mask IF (bit 9), DF (bit 10), TF (bit 8), AC (bit 18)
+    ControlRegs::WriteMsr(ControlRegs::kMsrSfmask, 0x40700);
+}
+
+u64 Syscall::Dispatch(SyscallRegisters* regs) {
+    // For now, just log and return.
+    // Syscall number is in RAX.
+    // Arguments in RDI, RSI, RDX, R10, R8, R9.
+    
+    if (regs->rax == 0) { // e.g. sys_test
+        return 0xCAFEBABE;
+    }
+
+    return static_cast<u64>(-1); // -ENOSYS
+}
+
+} // namespace ceryx::cpu

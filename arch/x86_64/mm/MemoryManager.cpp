@@ -1,5 +1,8 @@
 #include <ceryx/mm/MemoryManager.hpp>
+#include <ceryx/cpu/Idt.hpp>
 #include <FoundationKitCxxStl/Base/Logger.hpp>
+#include <FoundationKitMemory/Heap/GlobalAllocator.hpp>
+#include <FoundationKitPlatform/Amd64/ControlRegs.hpp>
 
 namespace ceryx::mm {
 
@@ -44,7 +47,7 @@ void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_h
     constexpr u64 kMaxManagedPhys  = kMaxManagedPages * kPageSize;
     
     if (max_phys_addr > kMaxManagedPhys) {
-        FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: WARNING: System physical address range ({:#x}) exceeds managed capacity ({:#x}).", 
+        FK_LOG_WARN("ceryx::mm::MemoryManager::Initialize: WARNING: System physical address range ({:#x}) exceeds managed capacity ({:#x}).",
                     max_phys_addr, kMaxManagedPhys);
         FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: USABLE memory above 32GB will be ignored.");
         max_phys_addr = kMaxManagedPhys;
@@ -200,6 +203,73 @@ void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_h
     auto* kmm_inst = new (kmm_storage) KmmType(*pfa_inst, *instance.m_ptm, *vma_alloc_inst, *pd_array_inst, k_base, k_top);
     
     instance.m_kmm = kmm_inst;
+
+    // 6.05 Populate Page Queues
+    // All physical pages managed by the PageDescriptorArray must be placed into the Free queue.
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Populating page queues...");
+    for (usize i = 0; i < pd_array_inst->TotalPages(); ++i) {
+        PageDescriptor& desc = pd_array_inst->Get(Pfn{pd_array_inst->BasePfn().value + i});
+        kmm_inst->GetQueues().EnqueueFree(&desc);
+    }
+    
+    // 6.1 Configure Memory Pressure Manager
+    // Set reasonable watermarks: Min 1MB, Low 4MB, High 16MB in pages
+    constexpr usize kPages1MB = (1 * 1024 * 1024) / kPageSize;
+    constexpr usize kPages4MB = (4 * 1024 * 1024) / kPageSize;
+    constexpr usize kPages16MB = (16 * 1024 * 1024) / kPageSize;
+    kmm_inst->SetWatermarks(kPages1MB, kPages4MB, kPages16MB);
+    
+    // 7. Setup Global Heap Allocator
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Initializing Global Heap Allocator...");
+    
+    // Allocate 128MB for the kernel heap
+    constexpr usize kHeapInitialSize = 128 * 1024 * 1024;
+    constexpr usize kHeapInitialPages = kHeapInitialSize / kPageSize;
+    
+    auto heap_base_res = kmm_inst->AllocateKernel(kHeapInitialPages, RegionFlags::Writable | RegionFlags::Readable, RegionType::Generic);
+    FK_BUG_ON(!heap_base_res.HasValue(), "Failed to allocate memory for kernel heap");
+    
+    VirtualAddress heap_base = heap_base_res.Value();
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Heap range: {:#x} - {:#x} ({} MB)", 
+                heap_base.value, heap_base.value + kHeapInitialSize, kHeapInitialSize / (1024 * 1024));
+    
+    static byte heap_alloc_storage[sizeof(HeapAllocType)] __attribute__((aligned(alignof(HeapAllocType))));
+    auto* heap_alloc_inst = new (heap_alloc_storage) HeapAllocType();
+    heap_alloc_inst->Initialize(reinterpret_cast<void*>(heap_base.value), kHeapInitialSize);
+    instance.m_heap_alloc = heap_alloc_inst;
+    
+    // Initialize the FoundationKit Global Allocator System
+    FoundationKitMemory::InitializeGlobalAllocator(*heap_alloc_inst);
+    
+    // 8. Setup Page Fault Handler
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Registering Page Fault handler...");
+    cpu::Idt::RegisterHandler(14, [](cpu::InterruptFrame* frame) {
+        VirtualAddress fault_va{FoundationKitPlatform::Amd64::ControlRegs::ReadCr2()};
+        
+        PageFaultFlags flags{PageFaultFlags::None};
+        if (frame->error_code & (1 << 0)) flags = flags | PageFaultFlags::Present;
+        if (frame->error_code & (1 << 1)) flags = flags | PageFaultFlags::Write;
+        if (frame->error_code & (1 << 2)) flags = flags | PageFaultFlags::User;
+        if (frame->error_code & (1 << 4)) flags = flags | PageFaultFlags::Instruction;
+
+        auto res = MemoryManager::GetKmm().HandlePageFault(fault_va, flags);
+        if (!res.HasValue()) {
+            FK_LOG_ERR("Page Fault UNRESOLVED: {:#x} at RIP {:#x}, error {:#x}", 
+                       fault_va.value, frame->rip, frame->error_code);
+            
+            // Dump registers for easier debugging
+            FK_LOG_ERR("RAX: {:#x} RBX: {:#x} RCX: {:#x} RDX: {:#x}", frame->rax, frame->rbx, frame->rcx, frame->rdx);
+            FK_LOG_ERR("RSI: {:#x} RDI: {:#x} RBP: {:#x} RSP: {:#x}", frame->rsi, frame->rdi, frame->rbp, frame->rsp);
+
+            FK_BUG("Unresolved Page Fault");
+        }
+    });
+    
+    // Test the allocator internally to ensure it's ready
+    auto internal_test_res = heap_alloc_inst->Allocate(64, 16);
+    FK_BUG_ON(!internal_test_res, "MemoryManager::Initialize: Internal heap test allocation failed");
+    heap_alloc_inst->Deallocate(internal_test_res.ptr, 64);
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Internal heap test passed.");
 
     FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Memory management initialized successfully.");
 }

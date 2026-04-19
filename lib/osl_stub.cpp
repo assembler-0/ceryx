@@ -2,6 +2,7 @@
 #include <FoundationKitCxxStl/Base/Types.hpp>
 #include <FoundationKitCxxStl/Base/CompilerBuiltins.hpp>
 #include <FoundationKitMemory/Core/MemoryOperations.hpp>
+#include <ceryx/cpu/CpuData.hpp>
 #include <lib/linearfb.hpp>
 #include <drivers/debugcon.hpp>
 
@@ -39,6 +40,26 @@ namespace FoundationKitOsl {
 
         bool OslIsSimdEnabled() {
             return false;
+        }
+
+        u32 OslGetCurrentCpuId() {
+            auto* cpu_data = static_cast<ceryx::cpu::CpuData*>(OslGetPerCpuBase());
+            if (!cpu_data) return 0;
+            return cpu_data->cpu_id;
+        }
+
+        void* OslGetPerCpuBase() {
+            void* base;
+            __asm__ volatile("movq %%gs:0, %0" : "=r"(base));
+            return base;
+        }
+
+        void* OslGetPerCpuBaseFor(u32 cpu_id) {
+            // TODO: Implement a way to look up Per-CPU base by ID.
+            // For now, only the current CPU is supported.
+            auto current_id = OslGetCurrentCpuId();
+            if (cpu_id == current_id) return OslGetPerCpuBase();
+            return nullptr;
         }
 
         u64 OslGetCurrentThreadId() {

@@ -51,6 +51,7 @@ public:
     using PageTableMgrType   = Amd64PageTableManager<PageFrameAllocType, HhdmAccessor>;
     using PdArrayType        = PageDescriptorArray<1024 * 1024 * 8>; // 8M pages = 32GB
     using VmaAllocType       = BuddyAllocator<16, kPageSize>;
+    using HeapAllocType      = BuddyAllocator<20, 128>; // 128 * 2^20 = 128MB.
     using KmmType            = KernelMemoryManager<PageFrameAllocType, PageTableMgrType, VmaAllocType, PdArrayType, 4>;
 
     static void Initialize(limine_memmap_response* memmap_response, limine_hhdm_response* hhdm_response) noexcept;
@@ -73,6 +74,7 @@ private:
     PdArrayType*        m_pd_array = nullptr;
     VmaAllocType*       m_vma_alloc = nullptr;
     KmmType*            m_kmm       = nullptr;
+    HeapAllocType*      m_heap_alloc = nullptr;
 
     static MemoryManager* s_instance;
 };
