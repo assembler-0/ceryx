@@ -3,6 +3,7 @@
 global SwitchContext
 global ThreadTrampoline
 global UserspaceTrampoline
+global ForkReturn
 extern ThreadDestroy
 
 SwitchContext:
@@ -92,3 +93,36 @@ UserspaceTrampoline:
 
     iretq
 
+; ──────────────────────────────────────────────────────────────────────────────
+; ForkReturn — landing point for a newly forked child thread.
+;
+; InitializeForkStack() builds the child kernel stack as:
+;   [switch frame: r15..rbp + ret→ForkReturn]  ← SwitchContext pops these
+;   [InterruptFrame: r15..rax=0, dummy×2, rip, cs, rflags, rsp_user, ss]
+;
+; After SwitchContext pops its 6 regs and 'ret's here, rsp points to
+; InterruptFrame.r15. We restore all GP regs and iretq to userspace.
+; The child gets rax=0 (fork() returns 0 in child).
+; ──────────────────────────────────────────────────────────────────────────────
+ForkReturn:
+    swapgs              ; restore user GS before Ring 3
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax             ; rax = 0  (fork returns 0 in child)
+
+    add rsp, 16         ; skip dummy interrupt_number + error_code
+
+    iretq               ; → rip, cs, rflags, user rsp, ss

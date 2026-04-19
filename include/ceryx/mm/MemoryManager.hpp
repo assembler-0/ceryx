@@ -49,7 +49,7 @@ class MemoryManager {
 public:
     using PageFrameAllocType = PageFrameAllocator<32, 20>;
     using PageTableMgrType   = Amd64PageTableManager<PageFrameAllocType, HhdmAccessor>;
-    using PdArrayType        = PageDescriptorArray<1024 * 1024 * 8>; // 8M pages = 32GB
+    using PdArrayType        = PageDescriptorArray<1ULL << 28>; // 1TB (256M pages)
     using VmaAllocType       = BuddyAllocator<16, kPageSize>;
     using HeapAllocType      = BuddyAllocator<20, 128>; // 128 * 2^20 = 128MB.
     using KmmType            = KernelMemoryManager<PageFrameAllocType, PageTableMgrType, VmaAllocType, PdArrayType, 4>;

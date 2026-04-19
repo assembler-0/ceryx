@@ -4,6 +4,7 @@
 #include <ceryx/proc/Process.hpp>
 #include <FoundationKitCxxStl/Base/Expected.hpp>
 #include <FoundationKitCxxStl/Base/Types.hpp>
+#include <ceryx/mm/MemoryManager.hpp>
 #include <ceryx/Errno.h>
 #include <FoundationKitPlatform/Amd64/ControlRegs.hpp>
 
@@ -43,12 +44,20 @@ struct Elf64_Phdr {
 
 class ElfLoader {
 public:
+    struct LoadResult {
+        uptr entry_point;
+        uptr stack_top;
+        uptr heap_base;
+    };
+
     /// @brief Load an ELF binary into a process address space.
     /// @param proc Process to populate.
     /// @param executable The vnode to the executable file.
-    /// @return The entry point virtual address on success, or an error code.
-    static Expected<uptr, int> Load(Process& proc, fs::Vnode& executable) noexcept {
+    /// @param load_bias Offset to apply to all segment addresses (for PIE).
+    /// @return The LoadResult on success, or an error code.
+    static Expected<LoadResult, int> Load(Process& proc, fs::Vnode& executable, uptr load_bias = 0) noexcept {
         Elf64_Ehdr header{};
+        u64 max_vaddr = 0;
         
         if (!executable.ops) return Unexpected<int>(-ENOEXEC); 
 
@@ -63,6 +72,15 @@ public:
             return Unexpected<int>(-ENOEXEC); 
         }
 
+        // Apply load bias only if it's a dynamic ELF (PIE) or if explicitly requested and safe.
+        // For simplicity, we apply it if provided.
+        uptr effective_bias = (header.e_type == 3) ? load_bias : 0;
+        if (header.e_type == 2 && load_bias != 0) {
+            // Static executable but bias provided? Usually an error unless specifically handled.
+            // We'll ignore the bias for ET_EXEC.
+            effective_bias = 0;
+        }
+
         auto prev_cr3 = FoundationKitPlatform::Amd64::ControlRegs::ReadCr3();
         FoundationKitPlatform::Amd64::ControlRegs::WriteCr3(proc.GetAddressSpace().GetRootPa().value);
 
@@ -72,8 +90,9 @@ public:
             if (!phdr_res || phdr_res.Value() != sizeof(phdr)) continue;
 
             if (phdr.p_type == 1) { // PT_LOAD
-                u64 page_aligned_vaddr = phdr.p_vaddr & ~0xFFFULL;
-                u64 padding = phdr.p_vaddr - page_aligned_vaddr;
+                u64 vaddr = phdr.p_vaddr + effective_bias;
+                u64 page_aligned_vaddr = vaddr & ~0xFFFULL;
+                u64 padding = vaddr - page_aligned_vaddr;
                 u64 mem_size = (phdr.p_memsz + padding + 0xFFF) & ~0xFFFULL;
 
                 auto map_res = proc.GetAddressSpace().GetInner().MapAnonymous(
@@ -98,38 +117,48 @@ public:
                     }
                 }
 
-                executable.ops->Read(executable, reinterpret_cast<void*>(phdr.p_vaddr), phdr.p_filesz, phdr.p_offset);
+                executable.ops->Read(executable, reinterpret_cast<void*>(vaddr), phdr.p_filesz, phdr.p_offset);
 
                 if (phdr.p_memsz > phdr.p_filesz) {
-                    FoundationKitMemory::MemoryZero(reinterpret_cast<void*>(phdr.p_vaddr + phdr.p_filesz), phdr.p_memsz - phdr.p_filesz);
+                    FoundationKitMemory::MemoryZero(reinterpret_cast<void*>(vaddr + phdr.p_filesz), phdr.p_memsz - phdr.p_filesz);
+                }
+
+                if (vaddr + phdr.p_memsz > max_vaddr) {
+                    max_vaddr = vaddr + phdr.p_memsz;
                 }
             }
         }
 
-        // Pre-allocate user stack at 0x7FFFF0000000 (128 KiB)
-        u64 stack_size = 0x20000; 
-        u64 stack_top = 0x7FFFF0000000ULL;
-        u64 stack_bottom = stack_top - stack_size;
-
-        proc.GetAddressSpace().GetInner().MapAnonymous(
-            FoundationKitMemory::VirtualAddress{stack_bottom}, stack_size,
+        // Pre-allocate 8MB user stack. Position it at the top of the address space.
+        u64 stack_size = 0x800000; // 8 MiB
+        FoundationKitMemory::VirtualAddress stack_hint{mm::MemoryManager::Layout::GetUserTop().value - stack_size - 0x1000};
+        auto stack_res = proc.GetAddressSpace().GetInner().MapAnonymous(
+            stack_hint, stack_size,
             FoundationKitMemory::VmaProt::UserReadWrite,
-            FoundationKitMemory::VmaFlags::Private | FoundationKitMemory::VmaFlags::Anonymous | FoundationKitMemory::VmaFlags::Fixed
+            FoundationKitMemory::VmaFlags::Private | FoundationKitMemory::VmaFlags::Anonymous
         );
-        for (u64 offset = 0; offset < stack_size; offset += 0x1000) {
-            auto fault_res = proc.GetAddressSpace().GetInner().HandleFault(
-                FoundationKitMemory::VirtualAddress{stack_bottom + offset},
-                FoundationKitMemory::PageFaultFlags::Write
-            );
-            if (!fault_res.HasValue()) {
-                 FoundationKitPlatform::Amd64::ControlRegs::WriteCr3(prev_cr3);
-                 return Unexpected<int>(-ENOMEM);
-            }
+
+        if (!stack_res) {
+            FoundationKitPlatform::Amd64::ControlRegs::WriteCr3(prev_cr3);
+            return Unexpected<int>(-ENOMEM);
         }
+
+        u64 stack_bottom = stack_res.Value().value;
+        u64 stack_top = stack_bottom + stack_size;
+
+        // Fault in the last page of the stack immediately so it's ready.
+        proc.GetAddressSpace().GetInner().HandleFault(
+            FoundationKitMemory::VirtualAddress{stack_top - 0x1000},
+            FoundationKitMemory::PageFaultFlags::Write
+        );
 
         FoundationKitPlatform::Amd64::ControlRegs::WriteCr3(prev_cr3);
 
-        return header.e_entry;  
+        return LoadResult{
+            .entry_point = header.e_entry + effective_bias,
+            .stack_top = stack_top,
+            .heap_base = (max_vaddr + 0xFFF) & ~0xFFFULL
+        };
     }
 };
 

@@ -48,7 +48,36 @@ Expected<UserAddressSpace*, MemoryError> UserAddressSpace::Create() noexcept {
 }
 
 void UserAddressSpace::Destroy() noexcept {
-    // TODO: Implementation
+    // 1. Unmap all user VMAs
+    m_inner->Unmap(m_inner->Base(), m_inner->Top().value - m_inner->Base().value);
+
+    // 2. Free the root page table
+    PhysicalAddress root_pa = m_ptm->RootPhysicalAddress();
+    MemoryManager::GetPfa().FreePages(PhysicalToPfn(root_pa), 1);
+
+    // 3. Clean up objects
+    delete m_inner;
+    delete m_ptm;
+    delete this;
+}
+
+Expected<UserAddressSpace*, MemoryError> UserAddressSpace::Fork() noexcept {
+    // 1. Create a fresh child address space (new root page table, kernel mappings mirrored).
+    auto child_res = Create();
+    if (!child_res.HasValue()) return child_res;
+
+    UserAddressSpace* child = child_res.Value();
+
+    // 2. Delegate the full CoW clone to AddressSpace::Fork().
+    //    This marks parent private PTEs read-only, creates shadow VmObjects in
+    //    the child, and maps the same physical pages into the child read-only.
+    auto fork_res = m_inner->Fork(child->GetInner());
+    if (!fork_res.HasValue()) {
+        child->Destroy();
+        return Unexpected(fork_res.Error());
+    }
+
+    return child;
 }
 
 void UserAddressSpace::MapUserPage(VirtualAddress va, PhysicalAddress pa, RegionFlags flags) noexcept {

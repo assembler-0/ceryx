@@ -1,6 +1,7 @@
 [bits 64]
 
 extern InterruptDispatch
+extern SignalCheckPending
 
 %macro isr_err_stub 1
 isr_stub_%1:
@@ -41,6 +42,18 @@ isr_common:
     cld
     call InterruptDispatch
 
+    ; Check if we are returning to userspace
+    test qword [rsp + 144], 3 ; [rsp + 144] is CS in the current stack
+    jz .no_signal_check
+
+    ; Check for pending signals before returning to user-space
+    ; frame is already at rsp
+    mov rdi, rsp
+    push rax ; Preserve rax just in case
+    call SignalCheckPending
+    pop rax
+
+.no_signal_check:
     pop r15
     pop r14
     pop r13
@@ -60,6 +73,7 @@ isr_common:
     ; Swap back if we are returning to userspace
     test qword [rsp + 24], 3
     jz .no_swap_back
+    
     swapgs
 .no_swap_back:
     add rsp, 16

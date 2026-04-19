@@ -8,6 +8,8 @@
 #include <FoundationKitCxxStl/Base/Logger.hpp>
 #include <FoundationKitPlatform/Clocksource/TimeKeeper.hpp>
 
+#include <ceryx/proc/Signal.hpp>
+
 namespace ceryx::cpu {
 
 using namespace FoundationKitPlatform::Clocksource;
@@ -45,14 +47,30 @@ void Idt::RegisterHandler(u8 vector, InterruptHandler handler) {
 extern "C" void InterruptDispatch(InterruptFrame* frame) {
     if (frame->interrupt_number == 32) {
         TimeKeeper::Advance();
-        Lapic::SendEoi();
-        Scheduler::Schedule();
+        Lapic::SendEoi(); // EOI before Tick() to allow nested interrupts.
+        Scheduler::Tick();
         return;
     }
 
     if (frame->interrupt_number < Idt::kIdtSize && Idt::s_handlers[frame->interrupt_number]) {
         Idt::s_handlers[frame->interrupt_number](frame);
     } else {
+        // If it's a hardware exception from userspace, try to send a signal
+        if (frame->interrupt_number < 32 && (frame->cs & 3) != 0) {
+            int sig = 0;
+            switch (frame->interrupt_number) {
+                case 0: sig = SIGFPE; break;
+                case 6: sig = SIGILL; break;
+                case 11: case 12: case 13: sig = SIGSEGV; break;
+                default: break;
+            }
+            
+            if (sig != 0) {
+                proc::Signal::Send(proc::Scheduler::GetCurrentThread(), sig);
+                return;
+            }
+        }
+
         FK_LOG_ERR("Unhandled interrupt: {} at RIP {:#x}, error code {:#x}", 
                    frame->interrupt_number, frame->rip, frame->error_code);
 

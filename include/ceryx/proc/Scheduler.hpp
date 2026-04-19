@@ -8,31 +8,54 @@ namespace ceryx::proc {
 
 class Scheduler {
 public:
-    /// @brief Initialize the scheduler.
+    // ── MLFQ configuration ───────────────────────────────────────────────────
+    static constexpr int kNumLevels = 3;
+    /// Tick quanta per MLFQ level (0 = highest priority, smallest quantum).
+    static constexpr int kQuantum[kNumLevels] = {5, 10, 20};
+    /// Every N ticks all threads are boosted to level 0 (starvation prevention).
+    static constexpr u64 kBoostInterval = 100;
+
+    // ── Lifecycle ────────────────────────────────────────────────────────────
+
+    /// @brief Initialize the global MLFQ state.
     static void Initialize();
 
-    /// @brief Start the scheduler (called by the BSP).
+    /// @brief Start the scheduler on the current BSP (creates idle + reaper threads).
     static void Start();
 
-    /// @brief Pick the next thread to run and switch to it.
-    static void Schedule();
+    // ── Scheduling entry points ──────────────────────────────────────────────
 
-    /// @brief Yield the current thread's remaining quantum.
+    /// @brief Called from the timer IRQ: advance clock, consume quantum, reschedule if expired.
+    static void Tick() noexcept;
+
+    /// @brief Voluntarily yield the remaining quantum (blocking-safe).
     static void Yield();
 
-    /// @brief Add a thread to the runqueue.
-    static void AddThread(Thread* thread);
+    /// @brief Block the current thread on a wait channel and immediately reschedule.
+    static void Block(void* channel);
 
-    /// @brief Get the currently running thread on this CPU.
-    static Thread* GetCurrentThread();
+    /// @brief Wake threads sleeping on a channel.
+    static void Wake(void* channel, bool wake_all = false);
 
-    // We use a raw pointer to a struct that holds the actual list in the .cpp file
-    // to avoid the complex template parsing issue in the header.
-    struct RunQueueImpl;
+    // ── Thread management ────────────────────────────────────────────────────
+
+    /// @brief Enqueue a thread at the given MLFQ level (default: 0 = highest).
+    static void AddThread(Thread* thread, int level = 0);
+
+    /// @brief Get the thread running on this CPU.
+    [[nodiscard]] static Thread* GetCurrentThread();
+
+    // ── Internal (visible for Reaper / SwitchContext callers) ────────────────
+    struct MlfqImpl;
 
 private:
-    static RunQueueImpl* s_impl;
+    static void ScheduleLocked() noexcept;
+    static void PerformSwitch(Thread* prev, Thread* next) noexcept;
+    static void BoostAll() noexcept;
+
+    static MlfqImpl* s_impl;
     static FoundationKitCxxStl::Sync::SpinLock s_lock;
+    static u64 s_tick_counter;
 };
 
 } // namespace ceryx::proc

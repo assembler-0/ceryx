@@ -99,46 +99,35 @@ extern "C" void start_kernel() {
 
 #include <ceryx/fs/pseudo/PseudoFs.hpp>
 #include <drivers/debugcon.hpp>
-
     // Launch /sbin/init
     auto init_node_res = ceryx::fs::Vfs::PathToVnode(g_vfs_root, "/sbin/init");
     if (init_node_res) {
         FK_LOG_INFO("ceryx::start_kernel: launching /sbin/init...");
         
-        auto proc_res = Process::Create(g_vfs_root, g_vfs_root);
-        if (proc_res) {
-            auto* proc = proc_res.Value();
-
-            // Setup STDIN (FD 0) and STDOUT (FD 1) -> Debug Console
-            auto stdout_vnode = RefPtr<ceryx::fs::Vnode>(
-                new ceryx::fs::pseudo::PseudoFsNode(
-                    ceryx::fs::pseudo::PseudoFsOpsImpl::GetOps(),
-                    "stdout",
-                    nullptr, // No read
-                    [](const void* buffer, usize size, usize /*offset*/) noexcept -> Expected<usize, int> {
-                        const char* data = static_cast<const char*>(buffer);
-                        for (usize i = 0; i < size; ++i) {
-                            debugcon_putc(data[i]);
-                        }
-                        return size;
-                    }
-                )
-            );
+        auto init_spawn_res = ceryx::proc::Process::Spawn(g_vfs_root, "/sbin/init");
+        if (init_spawn_res) {
+            auto* init_proc = init_spawn_res.Value();
             
-            proc->AllocateFd(RefPtr<ceryx::fs::FileDescription>(new ceryx::fs::FileDescription(stdout_vnode))); // FD 0
-            proc->AllocateFd(RefPtr<ceryx::fs::FileDescription>(new ceryx::fs::FileDescription(stdout_vnode))); // FD 1
+            // Create stdout pseudo-node for the terminal
+            auto stdout_vnode = RefPtr<ceryx::fs::Vnode>(new ceryx::fs::pseudo::PseudoFsNode(
+                ceryx::fs::pseudo::PseudoFsOpsImpl::GetOps(),
+                "stdout",
+                nullptr, // No read
+                [](const void* buffer, usize size, usize /*offset*/) noexcept -> Expected<usize, int> {
+                    const char* data = static_cast<const char*>(buffer);
+                    for (usize i = 0; i < size; ++i) {
+                        debugcon_putc(data[i]);
+                    }
+                    return size;
+                }
+            ));
 
-            auto entry_res = ElfLoader::Load(*proc, *init_node_res.Value());
-            if (entry_res) {
-                auto* thread = new Thread(proc, false);
-                thread->InitializeUserStack(entry_res.Value(), 0x7FFFF0000000ULL);
-                Scheduler::AddThread(thread);
-                FK_LOG_INFO("ceryx::start_kernel: init process scheduled at RIP {:#x}", entry_res.Value());
-            } else {
-                FK_LOG_ERR("ceryx::start_kernel: failed to load /sbin/init ELF: error {}", entry_res.Error());
-            }
+            // Setup standard FDs for init
+            init_proc->AllocateFd(RefPtr<ceryx::fs::FileDescription>(new ceryx::fs::FileDescription(stdout_vnode))); // FD 0
+            init_proc->AllocateFd(RefPtr<ceryx::fs::FileDescription>(new ceryx::fs::FileDescription(stdout_vnode))); // FD 1
+            init_proc->AllocateFd(RefPtr<ceryx::fs::FileDescription>(new ceryx::fs::FileDescription(stdout_vnode))); // FD 2
         } else {
-             FK_LOG_ERR("ceryx::start_kernel: failed to create init process");
+             FK_LOG_ERR("ceryx::start_kernel: failed to spawn /sbin/init: error {}", init_spawn_res.Error());
         }
     } else {
         FK_LOG_WARN("ceryx::start_kernel: /sbin/init not found in VFS root.");

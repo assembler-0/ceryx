@@ -104,15 +104,15 @@ namespace FoundationKitOsl {
         }
 
         void OslThreadSleep(void* channel) {
-            // TODO: Implement sleep/wait mechanism
+            ceryx::proc::Scheduler::Block(channel);
         }
 
         void OslThreadWake(void* channel) {
-            // TODO: Implement wake mechanism
+            ceryx::proc::Scheduler::Wake(channel, false);
         }
 
         void OslThreadWakeAll(void* channel) {
-            // TODO: Implement wake-all mechanism
+            ceryx::proc::Scheduler::Wake(channel, true);
         }
 
         uptr OslInterruptDisable() {

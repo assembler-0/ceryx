@@ -1,5 +1,8 @@
 #include <ceryx/mm/MemoryManager.hpp>
 #include <ceryx/cpu/Idt.hpp>
+#include <ceryx/proc/Signal.hpp>
+#include <ceryx/proc/Scheduler.hpp>
+#include <ceryx/proc/Process.hpp>
 #include <FoundationKitCxxStl/Base/Logger.hpp>
 #include <FoundationKitMemory/Heap/GlobalAllocator.hpp>
 #include <FoundationKitPlatform/Amd64/ControlRegs.hpp>
@@ -29,24 +32,19 @@ void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_h
     u64 total_usable_mem = 0;
     for (u64 i = 0; i < memmap_response->entry_count; ++i) {
         auto* entry = memmap_response->entries[i];
-        if (entry->base + entry->length > max_phys_addr) {
-            max_phys_addr = entry->base + entry->length;
+        
+        // We only manage descriptors for memory we can actually use.
+        // High-address Reserved/MMIO holes would otherwise bloat the flat PD array.
+        if (entry->type == LIMINE_MEMMAP_USABLE || 
+            entry->type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE) {
+            if (entry->base + entry->length > max_phys_addr) {
+                max_phys_addr = entry->base + entry->length;
+            }
         }
+        
         if (entry->type == LIMINE_MEMMAP_USABLE) {
             total_usable_mem += entry->length;
         }
-    }
-
-    // Support up to PdArrayType's maximum (8M pages = 32GB).
-    // We only manage up to the detected max_phys_addr or 32GB, whichever is smaller.
-    constexpr u64 kMaxManagedPages = 1024 * 1024 * 8;
-    constexpr u64 kMaxManagedPhys  = kMaxManagedPages * kPageSize;
-    
-    if (max_phys_addr > kMaxManagedPhys) {
-        FK_LOG_WARN("ceryx::mm::MemoryManager::Initialize: WARNING: System physical address range ({:#x}) exceeds managed capacity ({:#x}).",
-                    max_phys_addr, kMaxManagedPhys);
-        FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: USABLE memory above 32GB will be ignored.");
-        max_phys_addr = kMaxManagedPhys;
     }
 
     FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Managed physical range: 0 - {:#x}, Total usable memory: {} MB", 
@@ -61,14 +59,7 @@ void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_h
     for (u64 i = 0; i < memmap_response->entry_count; ++i) {
         auto* entry = memmap_response->entries[i];
         if (entry->type == LIMINE_MEMMAP_USABLE) {
-            // Region must at least start within managed range to be considered for PD array
-            if (entry->base >= kMaxManagedPhys) continue;
-            
-            // Available length within managed range
             u64 available_len = entry->length;
-            if (entry->base + available_len > kMaxManagedPhys) {
-                available_len = kMaxManagedPhys - entry->base;
-            }
 
             if (available_len >= pd_array_size) {
                 if (!best_entry || available_len > best_entry->length) {
@@ -116,16 +107,6 @@ void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_h
             u64 base = entry->base;
             u64 length = entry->length;
 
-            // Ignore memory regions (or parts of them) that exceed our managed capacity.
-            if (base >= kMaxManagedPhys) {
-                FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Ignoring usable region {:#x} - {:#x} (exceeds 32GB)", base, base + length);
-                continue;
-            }
-            if (base + length > kMaxManagedPhys) {
-                FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Truncating usable region {:#x} - {:#x} to 32GB limit", base, base + length);
-                length = kMaxManagedPhys - base;
-            }
-
             if (entry == best_entry) {
                 // Skip the part used by PD array
                 if (length <= used_by_pd) continue;
@@ -145,6 +126,8 @@ void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_h
                 // Ensure chunk doesn't cross MaxZoneSize boundary if possible, 
                 // but BuddyAllocator handles offset internally.
                 
+                FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Registering zone: Phys [{:#x} - {:#x}] ({} MB)",
+                            base, base + chunk_size, chunk_size / (1024 * 1024));
                 instance.m_pfa->RegisterZone(PhysicalAddress{base}, chunk_size / kPageSize, RegionType::Generic, hhdm.offset.ToVirtual(base));
                 
                 base += chunk_size;
@@ -219,9 +202,7 @@ void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_h
     // 7. Setup Global Heap Allocator
     FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Initializing Global Heap Allocator...");
     
-    // Allocate 128MB for the kernel heap initially.
-    // BuddyAllocator requires naturally aligned power-of-two blocks for large allocations.
-    constexpr usize kHeapInitialSize = 128 * 1024 * 1024;
+    constexpr usize kHeapInitialSize = 32 * 1024 * 1024;
     constexpr usize kHeapInitialPages = kHeapInitialSize / kPageSize;
     
     auto heap_base_res = kmm_inst->AllocateKernel(kHeapInitialPages, RegionFlags::Writable | RegionFlags::Readable, RegionType::Generic);
@@ -250,8 +231,31 @@ void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_h
         if (frame->error_code & (1 << 2)) flags = flags | PageFaultFlags::User;
         if (frame->error_code & (1 << 4)) flags = flags | PageFaultFlags::Instruction;
 
-        auto res = MemoryManager::GetKmm().HandlePageFault(fault_va, flags);
-        if (!res.HasValue()) {
+        // Dispatch to appropriate handler
+        bool resolved = false;
+
+        if (fault_va < MemoryManager::Layout::GetKernelBase()) {
+            // User-space fault
+            auto* thread = proc::Scheduler::GetCurrentThread();
+            auto* process = thread ? thread->GetProcess() : nullptr;
+            
+            if (process) {
+                auto res = process->GetAddressSpace().GetInner().HandleFault(fault_va, flags);
+                if (res.HasValue()) resolved = true;
+            }
+        } else {
+            // Kernel-space fault
+            auto res = MemoryManager::GetKmm().HandlePageFault(fault_va, flags);
+            if (res.HasValue()) resolved = true;
+        }
+
+        if (!resolved) {
+            if (fault_va < MemoryManager::Layout::GetKernelBase()) {
+                // For user-space, send SIGSEGV instead of panicking
+                proc::Signal::Send(proc::Scheduler::GetCurrentThread(), SIGSEGV);
+                return;
+            }
+
             FK_LOG_ERR("Page Fault UNRESOLVED: {:#x} at RIP {:#x}, error {:#x}", 
                        fault_va.value, frame->rip, frame->error_code);
             

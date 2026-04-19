@@ -36,6 +36,12 @@ struct VnodeOps {
     /// @brief Create a special device node.
     Expected<RefPtr<Vnode>, int> (*Mknod)(Vnode& dir, StringView name, VnodeType type) noexcept;
 
+    /// @brief Called when a new FileDescription is opened for this vnode.
+    void (*Open)(Vnode& vnode, u32 flags) noexcept;
+
+    /// @brief Called when a FileDescription for this vnode is closed.
+    void (*Close)(Vnode& vnode, u32 flags) noexcept;
+
     /// @brief Optional cleanup for the vnode when it's being destroyed.
     void (*Destroy)(Vnode& vnode) noexcept;
 };

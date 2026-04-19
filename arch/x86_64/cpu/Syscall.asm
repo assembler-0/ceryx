@@ -1,5 +1,6 @@
 [bits 64]
 extern SyscallDispatch
+extern SignalCheckPending
 
 global SyscallEntry
 SyscallEntry:
@@ -25,6 +26,9 @@ SyscallEntry:
     push 0x23        ; cs (User Code: 0x20 | 3)
     push rcx         ; rip
     
+    push 0           ; dummy error_code
+    push 0           ; dummy interrupt_number
+
     push rax
     push rbx
     push rcx
@@ -45,8 +49,15 @@ SyscallEntry:
     cld
     call SyscallDispatch
     
-    ; rax contains return value
+    ; rax contains return value, preserve it
+    push rax
     
+    ; Check for pending signals before returning to user-space
+    mov rdi, rsp
+    call SignalCheckPending
+
+    pop rax
+
     pop r15
     pop r14
     pop r13
@@ -62,6 +73,8 @@ SyscallEntry:
     pop rcx
     pop rbx
     ; Don't pop rax yet, it's our return value
+    
+    add rsp, 16 ; Skip dummy error_code and interrupt_number
 
     ; Restore state for SYSRET
     ; After pops, stack is: [rax], [rip], [cs], [rflags], [rsp], [ss]

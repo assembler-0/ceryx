@@ -20,6 +20,11 @@ public:
     /// @brief Create a new user address space with kernel mappings mirrored.
     static FoundationKitCxxStl::Expected<UserAddressSpace*, MemoryError> Create() noexcept;
 
+    /// @brief Clone this address space into a fresh child using CoW semantics.
+    /// The returned UserAddressSpace owns a new page table root; private VMAs
+    /// share physical pages (read-only) with the parent until either side writes.
+    [[nodiscard]] FoundationKitCxxStl::Expected<UserAddressSpace*, MemoryError> Fork() noexcept;
+
     /// @brief Destroy the address space and all associated mappings.
     void Destroy() noexcept;
 

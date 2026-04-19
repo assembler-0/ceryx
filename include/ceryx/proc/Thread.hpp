@@ -3,25 +3,20 @@
 #include <FoundationKitCxxStl/Base/Types.hpp>
 #include <FoundationKitMemory/Management/AddressTypes.hpp>
 #include <FoundationKitCxxStl/Structure/IntrusiveDoublyLinkedList.hpp>
+#include <ceryx/cpu/InterruptFrame.hpp>
 
 namespace ceryx::proc {
 
 using namespace FoundationKitCxxStl;
 using namespace FoundationKitCxxStl::Structure;
 
-/// @brief x86_64 Register State for a thread.
-struct RegisterState {
-    u64 r15, r14, r13, r12, r11, r10, r9, r8;
-    u64 rbp, rdi, rsi, rdx, rcx, rbx, rax;
-    u64 interrupt_number, error_code;
-    u64 rip, cs, rflags, rsp, ss;
-} __attribute__((packed));
 
 enum class ThreadState {
     Ready,
     Running,
     Blocked,
-    Terminated
+    Terminated,
+    Zombie,   ///< Thread finished but Process not yet waited on.
 };
 
 class Process;
@@ -42,6 +37,10 @@ public:
     /// @param user_rsp The stack pointer in userspace.
     void InitializeUserStack(uptr user_rip, uptr user_rsp) noexcept;
 
+    /// @brief Build a fork child's kernel stack: restores parent's InterruptFrame
+    ///        via ForkReturn trampoline, with rax=0 (fork returns 0 in child).
+    void InitializeForkStack(const cpu::InterruptFrame& parent_frame) noexcept;
+
     /// @brief Set the instruction pointer for the thread.
     void SetEntry(uptr rip) noexcept { m_regs.rip = rip; }
 
@@ -49,7 +48,7 @@ public:
     void SetStack(uptr rsp) noexcept { m_regs.rsp = rsp; }
 
     /// @brief Get the thread's register state.
-    [[nodiscard]] RegisterState& Registers() noexcept { return m_regs; }
+    [[nodiscard]] cpu::InterruptFrame& Registers() noexcept { return m_regs; }
 
     /// @brief Get the process this thread belongs to.
     [[nodiscard]] Process* GetProcess() const noexcept { return m_process; }
@@ -67,15 +66,50 @@ public:
     /// @brief Linkage for the scheduler's runqueue.
     IntrusiveDoublyLinkedListNode run_node;
 
+    /// @brief Linkage for wait channels.
+    IntrusiveDoublyLinkedListNode wait_node;
+
+    /// @brief Channel (object) the thread is waiting on.
+    void* wait_channel = nullptr;
+
+    /// @brief Set the thread's debug name.
+    void SetName(const char* name) noexcept;
+
+    [[nodiscard]] u64& PendingSignals() noexcept { return m_pending_signals; }
+    [[nodiscard]] u64 PendingSignals() const noexcept { return m_pending_signals; }
+
+    [[nodiscard]] u64& BlockedSignals() noexcept { return m_blocked_signals; }
+    [[nodiscard]] u64 BlockedSignals() const noexcept { return m_blocked_signals; }
+
+    // MLFQ scheduler fields.
+    [[nodiscard]] int  MlfqLevel() const noexcept { return m_mlfq_level; }
+    void SetMlfqLevel(int l) noexcept { m_mlfq_level = l; }
+
+    [[nodiscard]] int  TicksRemaining() const noexcept { return m_ticks_remaining; }
+    void SetTicksRemaining(int t) noexcept { m_ticks_remaining = t; }
+    bool ConsumeOneTick() noexcept { return --m_ticks_remaining <= 0; } ///< Returns true when quantum expires.
+
+    [[nodiscard]] u64 TotalTicks() const noexcept { return m_total_ticks; }
+    void IncrementTotalTicks() noexcept { ++m_total_ticks; }
+
 private:
     Process* m_process;
     u64 m_tid;
-    RegisterState m_regs{};
+    char m_name[32]{};
+    cpu::InterruptFrame m_regs{};
     uptr m_kernel_stack = 0;
     ThreadState m_state = ThreadState::Ready;
     u64 m_priority = 0;
 
+    // MLFQ state.
+    int m_mlfq_level      = 0; ///< Current MLFQ priority level (0 = highest).
+    int m_ticks_remaining = 5; ///< Ticks left in current quantum.
+    u64 m_total_ticks     = 0; ///< Total ticks consumed (for aging/boost decisions).
+
     static u64 s_next_tid;
+
+    u64 m_pending_signals = 0;
+    u64 m_blocked_signals = 0;
 };
 
 } // namespace ceryx::proc

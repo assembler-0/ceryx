@@ -19,9 +19,18 @@ public:
     u32 flags{0};
 
     /// @brief Construct a new FileDescription for a given Vnode.
-    explicit FileDescription(RefPtr<Vnode> v) noexcept : vnode(v) {}
+    explicit FileDescription(RefPtr<Vnode> v, u32 f = 0) noexcept : vnode(v), flags(f) {
+        if (vnode && vnode->ops && vnode->ops->Open) {
+            vnode->ops->Open(*vnode, flags);
+        }
+    }
 
-    void Destroy() const noexcept { delete this; }
+    void Destroy() const noexcept {
+        if (vnode && vnode->ops && vnode->ops->Close) {
+            vnode->ops->Close(*vnode, flags);
+        }
+        delete this;
+    }
 
     /// @brief Read data from the file.
     Expected<usize, int> Read(void* buffer, usize size) noexcept {
