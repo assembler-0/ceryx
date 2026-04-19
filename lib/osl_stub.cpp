@@ -27,7 +27,7 @@ namespace FoundationKitOsl {
     extern "C" {
 
         [[noreturn]] void OslBug(const char* msg) {
-            FK_LOG_INFO("ceryx: kernel panic:\n");
+            FK_LOG_INFO("ceryx: kernel panic:");
             OslLog(msg);
             for (;;) { __asm__ volatile("cli; hlt"); }
         }

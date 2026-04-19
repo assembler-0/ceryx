@@ -1,0 +1,207 @@
+#include <ceryx/mm/MemoryManager.hpp>
+#include <FoundationKitCxxStl/Base/Logger.hpp>
+
+namespace ceryx::mm {
+
+MemoryManager* MemoryManager::s_instance = nullptr;
+
+void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_hhdm_response* hhdm_response) noexcept {
+    FK_BUG_ON(s_instance != nullptr, "MemoryManager::Initialize: already initialized");
+    FK_BUG_ON(!memmap_response, "MemoryManager::Initialize: null memmap response");
+    FK_BUG_ON(!hhdm_response, "MemoryManager::Initialize: null HHDM response");
+
+    static MemoryManager instance;
+    s_instance = &instance;
+
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Starting memory management initialization...");
+
+    // 1. Setup HHDM Accessor
+    HhdmAccessor hhdm{HhdmOffset{hhdm_response->offset}};
+
+    // 2. Prepare Page Descriptor Array
+    // We search for a usable memory region that is large enough to hold our PD array.
+    // AND it must be high enough or low enough to not conflict with the kernel itself if possible,
+    // though Limine USABLE map should be safe.
+    
+    // Determine total physical memory to manage to know how much space we need for PD array.
+    u64 max_phys_addr = 0;
+    u64 total_usable_mem = 0;
+    for (u64 i = 0; i < memmap_response->entry_count; ++i) {
+        auto* entry = memmap_response->entries[i];
+        if (entry->base + entry->length > max_phys_addr) {
+            max_phys_addr = entry->base + entry->length;
+        }
+        if (entry->type == LIMINE_MEMMAP_USABLE) {
+            total_usable_mem += entry->length;
+        }
+    }
+
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Max physical address: {:#x}, Total usable memory: {} MB", 
+                max_phys_addr, total_usable_mem / (1024 * 1024));
+
+    // Support up to PdArrayType's maximum (8M pages = 32GB)
+    constexpr u64 kMaxManagedPages = 1024 * 1024 * 8;
+    constexpr u64 kMaxManagedPhys  = kMaxManagedPages * kPageSize;
+    
+    if (max_phys_addr > kMaxManagedPhys) {
+        FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: WARNING: System physical address range ({:#x}) exceeds managed capacity ({:#x}).", 
+                    max_phys_addr, kMaxManagedPhys);
+        FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: USABLE memory above 32GB will be ignored.");
+        max_phys_addr = kMaxManagedPhys;
+    }
+
+    u64 total_pages = (max_phys_addr + kPageSize - 1) / kPageSize;
+    usize pd_array_size = PdArrayType::StorageSize(total_pages);
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: PD array size required: {} KB for {} pages", 
+                pd_array_size / 1024, total_pages);
+    
+    limine_memmap_entry* best_entry = nullptr;
+    for (u64 i = 0; i < memmap_response->entry_count; ++i) {
+        auto* entry = memmap_response->entries[i];
+        if (entry->type == LIMINE_MEMMAP_USABLE) {
+            // Region must at least start within managed range to be considered for PD array
+            if (entry->base >= kMaxManagedPhys) continue;
+            
+            // Available length within managed range
+            u64 available_len = entry->length;
+            if (entry->base + available_len > kMaxManagedPhys) {
+                available_len = kMaxManagedPhys - entry->base;
+            }
+
+            if (available_len >= pd_array_size) {
+                if (!best_entry || available_len > best_entry->length) {
+                    best_entry = entry;
+                }
+            }
+        }
+    }
+
+    if (!best_entry) {
+        FK_LOG_ERR("ceryx::mm::MemoryManager::Initialize: CRITICAL: Could not find {} KB of contiguous usable memory for PD array!", pd_array_size / 1024);
+        for (u64 i = 0; i < memmap_response->entry_count; ++i) {
+            auto* entry = memmap_response->entries[i];
+            FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Region {}: base={:#x}, len={:#x}, type={}", 
+                        i, entry->base, entry->length, entry->type);
+        }
+    }
+
+    FK_BUG_ON(!best_entry, "MemoryManager::Initialize: no usable memory region large enough for PD array found");
+
+    void* pd_array_storage = hhdm.offset.ToVirtual(best_entry->base);
+    
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Initializing PD array at {}...", pd_array_storage);
+    static byte pd_array_storage_obj[sizeof(PdArrayType)] __attribute__((aligned(alignof(PdArrayType))));
+    auto* pd_array_inst = new (pd_array_storage_obj) PdArrayType();
+    instance.m_pd_array = pd_array_inst;
+    instance.m_pd_array->Initialize(pd_array_storage, Pfn{0}, total_pages);
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: PD array initialized.");
+
+    // Consume space used by PD array for the best_entry
+    u64 used_by_pd = (pd_array_size + kPageSize - 1) & ~(kPageSize - 1);
+    
+    // 3. Setup Page Frame Allocator
+    static byte pfa_storage[sizeof(PageFrameAllocType)] __attribute__((aligned(alignof(PageFrameAllocType))));
+    auto* pfa_inst = new (pfa_storage) PageFrameAllocType();
+    instance.m_pfa = pfa_inst;
+
+    // Use a small buffer to store zone information temporarily if needed, 
+    // but RegisterZone stores them internally.
+
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Registering memory zones...");
+    for (u64 i = 0; i < memmap_response->entry_count; ++i) {
+        auto* entry = memmap_response->entries[i];
+        if (entry->type == LIMINE_MEMMAP_USABLE) {
+            u64 base = entry->base;
+            u64 length = entry->length;
+
+            // Ignore memory regions (or parts of them) that exceed our managed capacity.
+            if (base >= kMaxManagedPhys) {
+                FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Ignoring usable region {:#x} - {:#x} (exceeds 32GB)", base, base + length);
+                continue;
+            }
+            if (base + length > kMaxManagedPhys) {
+                FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Truncating usable region {:#x} - {:#x} to 32GB limit", base, base + length);
+                length = kMaxManagedPhys - base;
+            }
+
+            if (entry == best_entry) {
+                // Skip the part used by PD array
+                if (length <= used_by_pd) continue;
+                base += used_by_pd;
+                length -= used_by_pd;
+            }
+
+            // BuddyAllocator requires alignment for the start address relative to its base.
+            // For BuddyOrder=20, MaxBlockSize is 4GB. If a zone is larger than 4GB, it will fail.
+            // We split large zones into 4GB chunks.
+            constexpr u64 kMaxZoneSize = (1ULL << 20) * kPageSize; // 4GB for order 20
+            
+            while (length >= kPageSize) {
+                u64 chunk_size = length;
+                if (chunk_size > kMaxZoneSize) chunk_size = kMaxZoneSize;
+                
+                // Ensure chunk doesn't cross MaxZoneSize boundary if possible, 
+                // but BuddyAllocator handles offset internally.
+                
+                instance.m_pfa->RegisterZone(PhysicalAddress{base}, chunk_size / kPageSize, RegionType::Generic, hhdm.offset.ToVirtual(base));
+                
+                base += chunk_size;
+                length -= chunk_size;
+            }
+        }
+    }
+    
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Booting Page Frame Allocator...");
+    instance.m_pfa->Boot();
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Page Frame Allocator booted.");
+
+    // 4. Setup Page Table Manager
+    auto paging_mode = Paging::DetectPagingMode();
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Detected paging mode: {}-level", static_cast<u8>(paging_mode));
+
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Setting up Page Table Manager...");
+    PhysicalAddress kernel_pt_root{ControlRegs::Cr3PhysBase()};
+    static byte ptm_storage[sizeof(PageTableMgrType)] __attribute__((aligned(alignof(PageTableMgrType))));
+    auto* ptm_inst = new (ptm_storage) PageTableMgrType(*pfa_inst, kernel_pt_root, paging_mode, HhdmAccessor{hhdm});
+    instance.m_ptm = ptm_inst;
+
+    // 5. Setup VMA Allocator (using BuddyAllocator)
+    // We need to allocate some memory for the VMA allocator itself.
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Allocating memory for VMA allocator...");
+    auto vma_alloc_res = pfa_inst->AllocatePages(128, RegionType::Generic);
+    FK_BUG_ON(!vma_alloc_res.HasValue(), "Failed to allocate memory for VMA allocator");
+    void* vma_alloc_storage = hhdm.offset.ToVirtual(vma_alloc_res.Value().value * kPageSize);
+    
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Initializing VMA allocator...");
+    static byte vma_storage[sizeof(VmaAllocType)] __attribute__((aligned(alignof(VmaAllocType))));
+    auto* vma_alloc_inst = new (vma_storage) VmaAllocType();
+    vma_alloc_inst->Initialize(vma_alloc_storage, 128 * kPageSize);
+    instance.m_vma_alloc = vma_alloc_inst;
+
+    // 6. Setup Kernel Memory Manager
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Initializing Kernel Memory Manager...");
+
+    VirtualAddress k_base{0xFFFF800000000000};
+    VirtualAddress k_top{0xFFFFFFFFFFFFF000};
+    
+    if (paging_mode == Paging::PagingMode::Level5) {
+        // In 5-level paging, the higher half starts at bit 56.
+        // Limine HHDM is at 0xffff800000000000 by default (4-level).
+        FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: 5-level paging detected. Using default kernel VA layout.");
+    }
+
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: KMM VA Range: {:#x} - {:#x}", k_base.value, k_top.value);
+    
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Constructing KernelMemoryManager object...");
+    
+    // Use manual placement new for all static instances to bypass thread-safe initialization guards.
+    // The memory for these objects is allocated in the .bss section.
+    static byte kmm_storage[sizeof(KmmType)] __attribute__((aligned(alignof(KmmType))));
+    auto* kmm_inst = new (kmm_storage) KmmType(*pfa_inst, *instance.m_ptm, *vma_alloc_inst, *pd_array_inst, k_base, k_top);
+    
+    instance.m_kmm = kmm_inst;
+
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Memory management initialized successfully.");
+}
+
+} // namespace ceryx::mm
