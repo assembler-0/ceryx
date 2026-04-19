@@ -2,6 +2,10 @@
 #include <ceryx/cpu/Gdt.hpp>
 #include <FoundationKitPlatform/Amd64/ControlRegs.hpp>
 #include <drivers/debugcon.hpp>
+#include <ceryx/proc/Scheduler.hpp>
+#include <ceryx/proc/Process.hpp>
+#include <ceryx/fs/FileDescription.hpp>
+#include <ceryx/Errno.h>
 
 namespace ceryx::cpu {
 
@@ -42,11 +46,42 @@ u64 Syscall::Dispatch(SyscallRegisters* regs) {
     // In a real kernel, we would use a more efficient way, but for verification this is perfect.
     FK_LOG_INFO("ceryx::cpu::Syscall: Received syscall {} from RIP {:#x}", regs->rax, regs->rip);
     
-    if (regs->rax == 0) { // sys_test
-        return 0xCAFEBABE;
+    auto* thread = proc::Scheduler::GetCurrentThread();
+    auto* process = thread ? thread->GetProcess() : nullptr;
+
+    switch (regs->rax) {
+        case 0: { // sys_read
+            if (!process) return static_cast<u64>(-ENOSYS);
+            auto fd_desc = process->GetFd(regs->rdi);
+            if (!fd_desc) return static_cast<u64>(-EBADF);
+            auto res = fd_desc->Read(reinterpret_cast<void*>(regs->rsi), regs->rdx);
+            if (!res) return static_cast<u64>(res.Error());
+            return res.Value();
+        }
+        case 1: { // sys_write
+            if (!process) return static_cast<u64>(-ENOSYS);
+            auto fd_desc = process->GetFd(regs->rdi);
+            if (!fd_desc) return static_cast<u64>(-EBADF);
+            auto res = fd_desc->Write(reinterpret_cast<const void*>(regs->rsi), regs->rdx);
+            if (!res) return static_cast<u64>(res.Error());
+            return res.Value();
+        }
+        case 3: { // sys_close
+            if (!process) return static_cast<u64>(-ENOSYS);
+            process->FreeFd(regs->rdi);
+            return 0;
+        }
+        case 60: { // sys_exit
+            if (thread) {
+                thread->SetState(proc::ThreadState::Terminated);
+                proc::Scheduler::Yield();
+            }
+            return 0;
+        }
+        default: break;
     }
 
-    return static_cast<u64>(-1); // -ENOSYS
+    return static_cast<u64>(-ENOSYS);
 }
 
 } // namespace ceryx::cpu

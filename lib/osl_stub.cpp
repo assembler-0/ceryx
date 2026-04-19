@@ -27,6 +27,10 @@ extern "C" {
     void* memmove(void* dest, const void* src, usize size) {
         return FoundationKitMemory::MemoryMove(dest, src, size);
     }
+
+    int memcmp(const void* a, const void* b, usize size) {
+        return FoundationKitMemory::MemoryCompare(a, b, size);
+    }
 }
 
 namespace FoundationKitOsl {
@@ -136,10 +140,8 @@ namespace FoundationKitOsl {
             return (flags & (1ULL << 9)) != 0;
         }
 
-        static char hostname[16] = "ceryx 0.01a";
-
-        char* OslGetHostOsName() {
-            return hostname;
+        const char* OslGetHostOsName() {
+            return "Ceryx 0.01a";
         }
 
     } // extern "C"

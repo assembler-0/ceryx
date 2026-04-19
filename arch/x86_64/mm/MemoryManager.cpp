@@ -170,14 +170,14 @@ void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_h
     // 5. Setup VMA Allocator (using BuddyAllocator)
     // We need to allocate some memory for the VMA allocator itself.
     FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Allocating memory for VMA allocator...");
-    auto vma_alloc_res = pfa_inst->AllocatePages(128, RegionType::Generic);
+    auto vma_alloc_res = pfa_inst->AllocatePages(8192, RegionType::Generic);
     FK_BUG_ON(!vma_alloc_res.HasValue(), "Failed to allocate memory for VMA allocator");
     void* vma_alloc_storage = hhdm.offset.ToVirtual(vma_alloc_res.Value().value * kPageSize);
     
     FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Initializing VMA allocator...");
     static byte vma_storage[sizeof(VmaAllocType)] __attribute__((aligned(alignof(VmaAllocType))));
     auto* vma_alloc_inst = new (vma_storage) VmaAllocType();
-    vma_alloc_inst->Initialize(vma_alloc_storage, 128 * kPageSize);
+    vma_alloc_inst->Initialize(vma_alloc_storage, 8192 * kPageSize);
     instance.m_vma_alloc = vma_alloc_inst;
 
     // 6. Setup Kernel Memory Manager
@@ -219,10 +219,9 @@ void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_h
     // 7. Setup Global Heap Allocator
     FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Initializing Global Heap Allocator...");
     
-    // Allocate 16MB for the kernel heap initially.
+    // Allocate 128MB for the kernel heap initially.
     // BuddyAllocator requires naturally aligned power-of-two blocks for large allocations.
-    // 128MB might fail if physical memory is fragmented early on.
-    constexpr usize kHeapInitialSize = 16 * 1024 * 1024;
+    constexpr usize kHeapInitialSize = 128 * 1024 * 1024;
     constexpr usize kHeapInitialPages = kHeapInitialSize / kPageSize;
     
     auto heap_base_res = kmm_inst->AllocateKernel(kHeapInitialPages, RegionFlags::Writable | RegionFlags::Readable, RegionType::Generic);

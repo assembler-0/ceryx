@@ -3,6 +3,16 @@
 # ============================================================================
 
 add_custom_command(
+        OUTPUT initrd.cpio
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/initrd_root/sbin
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:init.elf> ${CMAKE_CURRENT_BINARY_DIR}/initrd_root/sbin/init
+        COMMAND sh -c "cd ${CMAKE_CURRENT_BINARY_DIR}/initrd_root && find . | cpio -o -H newc > ${CMAKE_CURRENT_BINARY_DIR}/initrd.cpio"
+        DEPENDS init.elf
+        COMMENT "Generating initrd.cpio..."
+        VERBATIM
+)
+
+add_custom_command(
         OUTPUT bootd
         COMMAND ${CMAKE_COMMAND} -E touch bootd
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/bootdir/ceryx
@@ -14,10 +24,13 @@ add_custom_command(
         # Copy kernel
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:ceryx.krnl>
         ${CMAKE_CURRENT_BINARY_DIR}/bootdir/ceryx/ceryx.krnl
+        # Copy Initrd
+        COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_BINARY_DIR}/initrd.cpio
+        ${CMAKE_CURRENT_BINARY_DIR}/bootdir/module/initrd.cpio
         # Copy Limine config
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/scripts/limine.conf
         ${CMAKE_CURRENT_BINARY_DIR}/bootdir/limine.conf
-        DEPENDS ceryx.krnl ${CMAKE_CURRENT_SOURCE_DIR}/scripts/limine.conf
+        DEPENDS ceryx.krnl initrd.cpio ${CMAKE_CURRENT_SOURCE_DIR}/scripts/limine.conf
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
         COMMENT "Setting up boot directory with Limine"
         VERBATIM

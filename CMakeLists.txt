@@ -23,6 +23,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/toolchain")
 set(FOUNDATIONKIT_BUILD_TESTS OFF)
 
 add_subdirectory(FoundationKit)
+add_subdirectory(userspace)
 
 # ============================================================================
 # Configuration & Dependencies
