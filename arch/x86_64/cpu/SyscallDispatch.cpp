@@ -38,11 +38,11 @@ void Syscall::Initialize() {
 }
 
 u64 Syscall::Dispatch(SyscallRegisters* regs) {
-    // For now, just log and return.
-    // Syscall number is in RAX.
-    // Arguments in RDI, RSI, RDX, R10, R8, R9.
+    // Log the syscall for verification.
+    // In a real kernel, we would use a more efficient way, but for verification this is perfect.
+    FK_LOG_INFO("ceryx::cpu::Syscall: Received syscall {} from RIP {:#x}", regs->rax, regs->rip);
     
-    if (regs->rax == 0) { // e.g. sys_test
+    if (regs->rax == 0) { // sys_test
         return 0xCAFEBABE;
     }
 

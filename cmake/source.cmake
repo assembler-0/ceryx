@@ -8,6 +8,7 @@ file(GLOB_RECURSE ARCH_DRIVER_SOURCES "arch/x86_64/drivers/*.cpp")
 file(GLOB_RECURSE ARCH_IDT_SOURCES "arch/x86_64/idt/*.cpp")
 file(GLOB_RECURSE ARCH_IDT_ASM_SOURCES "arch/x86_64/idt/*.asm")
 file(GLOB_RECURSE ARCH_CPU_SOURCES "arch/x86_64/cpu/*.cpp")
+file(GLOB_RECURSE ARCH_PROC_SOURCES "arch/x86_64/proc/*.cpp")
 file(GLOB_RECURSE ARCH_CPU_ASM_SOURCES "arch/x86_64/cpu/*.asm")
 file(GLOB_RECURSE ARCH_MM_SOURCES "arch/x86_64/mm/*.cpp")
 file(GLOB_RECURSE ARCH_BOOT_SOURCES "arch/x86_64/boot/*.cpp")
@@ -22,6 +23,7 @@ list(APPEND ARCH_SOURCES
     ${ARCH_IDT_SOURCES}
     ${ARCH_IDT_ASM_SOURCES}
     ${ARCH_CPU_SOURCES}
+    ${ARCH_PROC_SOURCES}
     ${ARCH_CPU_ASM_SOURCES}
     ${ARCH_MM_SOURCES}
     ${ARCH_IRQ_SOURCES}

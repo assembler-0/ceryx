@@ -29,6 +29,9 @@ public:
     /// @brief Get the page table root physical address.
     [[nodiscard]] PhysicalAddress GetRootPa() const noexcept { return m_ptm->RootPhysicalAddress(); }
 
+    /// @brief Map a physical page into the user range.
+    void MapUserPage(VirtualAddress va, PhysicalAddress pa, RegionFlags flags) noexcept;
+
 private:
     UserAddressSpace(AddressSpaceType* inner, MemoryManager::PageTableMgrType* ptm) noexcept
         : m_inner(inner), m_ptm(ptm) {}

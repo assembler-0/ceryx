@@ -1,9 +1,17 @@
 #include <ceryx/cpu/Idt.hpp>
 #include <ceryx/cpu/Gdt.hpp>
+#include <ceryx/cpu/Idt.hpp>
+#include <ceryx/cpu/Gdt.hpp>
+#include <ceryx/cpu/Lapic.hpp>
+#include <ceryx/proc/Scheduler.hpp>
 #include <FoundationKitMemory/Core/MemoryOperations.hpp>
 #include <FoundationKitCxxStl/Base/Logger.hpp>
+#include <FoundationKitPlatform/Clocksource/TimeKeeper.hpp>
 
 namespace ceryx::cpu {
+
+using namespace FoundationKitPlatform::Clocksource;
+using namespace ceryx::proc;
 
 IdtGate Idt::s_idt[Idt::kIdtSize];
 InterruptHandler Idt::s_handlers[Idt::kIdtSize];
@@ -21,11 +29,13 @@ void Idt::Initialize() {
         s_idt[i].SetAttributes(0, IdtGateType::InterruptGate);
     }
 
-    IdtPointer ptr;
+    IdtPointer ptr{};
     ptr.limit = sizeof(s_idt) - 1;
     ptr.base = reinterpret_cast<u64>(s_idt);
 
     __asm__ volatile ("lidt %0" : : "m"(ptr));
+
+    FK_LOG_INFO("IDT initialized");
 }
 
 void Idt::RegisterHandler(u8 vector, InterruptHandler handler) {
@@ -33,12 +43,19 @@ void Idt::RegisterHandler(u8 vector, InterruptHandler handler) {
 }
 
 extern "C" void InterruptDispatch(InterruptFrame* frame) {
+    if (frame->interrupt_number == 32) {
+        TimeKeeper::Advance();
+        Lapic::SendEoi();
+        Scheduler::Schedule();
+        return;
+    }
+
     if (frame->interrupt_number < Idt::kIdtSize && Idt::s_handlers[frame->interrupt_number]) {
         Idt::s_handlers[frame->interrupt_number](frame);
     } else {
         FK_LOG_ERR("Unhandled interrupt: {} at RIP {:#x}, error code {:#x}", 
                    frame->interrupt_number, frame->rip, frame->error_code);
-        
+
         // Dump some registers
         FK_LOG_ERR("RAX: {:#x} RBX: {:#x} RCX: {:#x} RDX: {:#x}", frame->rax, frame->rbx, frame->rcx, frame->rdx);
         FK_LOG_ERR("RSI: {:#x} RDI: {:#x} RBP: {:#x} RSP: {:#x}", frame->rsi, frame->rdi, frame->rbp, frame->rsp);
@@ -48,3 +65,4 @@ extern "C" void InterruptDispatch(InterruptFrame* frame) {
 }
 
 } // namespace ceryx::cpu
+

@@ -64,8 +64,9 @@ SyscallEntry:
     ; Don't pop rax yet, it's our return value
 
     ; Restore state for SYSRET
-    mov r11, [rsp + 16] ; rflags
-    mov rcx, [rsp + 0]  ; rip
+    ; After pops, stack is: [rax], [rip], [cs], [rflags], [rsp], [ss]
+    mov r11, [rsp + 24] ; rflags
+    mov rcx, [rsp + 8]  ; rip
     
     mov rsp, [gs:24] ; Restore user RSP
     swapgs

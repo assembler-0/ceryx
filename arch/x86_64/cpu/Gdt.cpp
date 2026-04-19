@@ -54,6 +54,8 @@ void Gdt::Initialize() {
         : "m"(ptr), "i"(kKernelCodeSelector), "r"(kKernelDataSelector), "r"(static_cast<u16>(kTssSelector))
         : "rax", "memory"
     );
+
+    FK_LOG_INFO("GDT initialized");
 }
 
 void Gdt::SetupDescriptor(GdtDescriptor& desc, u32 base, u32 limit, u8 access, u8 gran) {

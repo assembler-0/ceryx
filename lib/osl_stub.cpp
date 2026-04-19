@@ -3,10 +3,16 @@
 #include <FoundationKitCxxStl/Base/CompilerBuiltins.hpp>
 #include <FoundationKitMemory/Core/MemoryOperations.hpp>
 #include <ceryx/cpu/CpuData.hpp>
+#include <ceryx/cpu/Lapic.hpp>
+#include <ceryx/proc/Scheduler.hpp>
+#include <ceryx/proc/Thread.hpp>
 #include <lib/linearfb.hpp>
 #include <drivers/debugcon.hpp>
+#include <FoundationKitPlatform/Amd64/Cpu.hpp>
+#include <FoundationKitPlatform/Amd64/ControlRegs.hpp>
 
 using namespace FoundationKitCxxStl;
+using namespace FoundationKitPlatform::Amd64;
 
 extern "C" {
     // 3. Basic memory functions (Compiler emits calls to these)
@@ -39,7 +45,9 @@ namespace FoundationKitOsl {
         }
 
         bool OslIsSimdEnabled() {
-            return false;
+            // Check CR4.OSFXSR and CR4.OSXMMEXCPT
+            u64 cr4 = ControlRegs::ReadCr4();
+            return (cr4 & (1ULL << 9)) && (cr4 & (1ULL << 10));
         }
 
         u32 OslGetCurrentCpuId() {
@@ -55,27 +63,52 @@ namespace FoundationKitOsl {
         }
 
         void* OslGetPerCpuBaseFor(u32 cpu_id) {
-            // TODO: Implement a way to look up Per-CPU base by ID.
-            // For now, only the current CPU is supported.
-            auto current_id = OslGetCurrentCpuId();
-            if (cpu_id == current_id) return OslGetPerCpuBase();
+            // For now, we only support a single CPU (BSP).
+            if (cpu_id == 0) return OslGetPerCpuBase();
             return nullptr;
         }
 
+        u64 OslGetSystemTicks() {
+            return Rdtsc();
+        }
+
+        u64 OslGetSystemFrequency() {
+            return ceryx::cpu::ApicTimer::GetTscFrequency();
+        }
+
+        u64 OslGetWallClockBase() {
+            // TODO: Implement RTC or EFI time lookup.
+            return 0;
+        }
+
+        void OslMicroDelay(u64 microseconds) {
+            u64 start = Rdtsc();
+            u64 delta = (microseconds * ceryx::cpu::ApicTimer::GetTscFrequency()) / 1000000;
+            while (Rdtsc() - start < delta) {
+                __asm__ volatile("pause");
+            }
+        }
+
         u64 OslGetCurrentThreadId() {
-            return 1;
+            auto* thread = ceryx::proc::Scheduler::GetCurrentThread();
+            if (!thread) return 0;
+            return thread->GetId();
         }
 
         void OslThreadYield() {
+            ceryx::proc::Scheduler::Yield();
         }
 
         void OslThreadSleep(void* channel) {
+            // TODO: Implement sleep/wait mechanism
         }
 
         void OslThreadWake(void* channel) {
+            // TODO: Implement wake mechanism
         }
 
         void OslThreadWakeAll(void* channel) {
+            // TODO: Implement wake-all mechanism
         }
 
         uptr OslInterruptDisable() {
@@ -90,9 +123,11 @@ namespace FoundationKitOsl {
         }
 
         void OslInterruptRestore(uptr state) {
-            if (state & (1ULL << 9)) {  // check IF bit
-                __asm__ volatile("sti" ::: "memory");
-            }
+            __asm__ volatile(
+                "push %0\n"
+                "popfq\n"
+                : : "r"(state) : "memory", "cc"
+            );
         }
 
         bool OslIsInterruptEnabled() {

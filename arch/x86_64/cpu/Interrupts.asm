@@ -16,6 +16,11 @@ isr_stub_%1:
 %endmacro
 
 isr_common:
+    ; Check if the interrupt came from userspace (RPL 3)
+    test qword [rsp + 24], 3
+    jz .no_swap
+    swapgs
+.no_swap:
     push rax
     push rbx
     push rcx
@@ -51,6 +56,12 @@ isr_common:
     pop rcx
     pop rbx
     pop rax
+
+    ; Swap back if we are returning to userspace
+    test qword [rsp + 24], 3
+    jz .no_swap_back
+    swapgs
+.no_swap_back:
     add rsp, 16
     iretq
 

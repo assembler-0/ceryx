@@ -25,11 +25,17 @@ struct CpuData {
     /// @brief Temporary storage for user RSP during syscalls.
     uptr user_rsp;
 
+    /// @brief Currently running thread on this CPU.
+    void* current_thread;
+
+    /// @brief Idle thread for this CPU.
+    void* idle_thread;
+
     /// @brief Per-CPU allocator instance (if we decide to have one).
     void* per_cpu_allocator;
 
     /// @brief Reserved for future use.
-    u64 reserved[8];
+    u64 reserved[6];
 };
 
 } // namespace ceryx::cpu

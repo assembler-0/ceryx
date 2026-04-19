@@ -23,10 +23,8 @@ void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_h
 
     // 2. Prepare Page Descriptor Array
     // We search for a usable memory region that is large enough to hold our PD array.
-    // AND it must be high enough or low enough to not conflict with the kernel itself if possible,
-    // though Limine USABLE map should be safe.
     
-    // Determine total physical memory to manage to know how much space we need for PD array.
+    // Determine the actual maximum physical address present in the system memmap.
     u64 max_phys_addr = 0;
     u64 total_usable_mem = 0;
     for (u64 i = 0; i < memmap_response->entry_count; ++i) {
@@ -39,10 +37,8 @@ void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_h
         }
     }
 
-    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Max physical address: {:#x}, Total usable memory: {} MB", 
-                max_phys_addr, total_usable_mem / (1024 * 1024));
-
-    // Support up to PdArrayType's maximum (8M pages = 32GB)
+    // Support up to PdArrayType's maximum (8M pages = 32GB).
+    // We only manage up to the detected max_phys_addr or 32GB, whichever is smaller.
     constexpr u64 kMaxManagedPages = 1024 * 1024 * 8;
     constexpr u64 kMaxManagedPhys  = kMaxManagedPages * kPageSize;
     
@@ -52,6 +48,9 @@ void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_h
         FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: USABLE memory above 32GB will be ignored.");
         max_phys_addr = kMaxManagedPhys;
     }
+
+    FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Managed physical range: 0 - {:#x}, Total usable memory: {} MB", 
+                max_phys_addr, total_usable_mem / (1024 * 1024));
 
     u64 total_pages = (max_phys_addr + kPageSize - 1) / kPageSize;
     usize pd_array_size = PdArrayType::StorageSize(total_pages);
@@ -184,14 +183,8 @@ void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_h
     // 6. Setup Kernel Memory Manager
     FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Initializing Kernel Memory Manager...");
 
-    VirtualAddress k_base{0xFFFF800000000000};
-    VirtualAddress k_top{0xFFFFFFFFFFFFF000};
-    
-    if (paging_mode == Paging::PagingMode::Level5) {
-        // In 5-level paging, the higher half starts at bit 56.
-        // Limine HHDM is at 0xffff800000000000 by default (4-level).
-        FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: 5-level paging detected. Using default kernel VA layout.");
-    }
+    VirtualAddress k_base = Layout::GetKernelBase();
+    VirtualAddress k_top = Layout::GetKernelTop();
 
     FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: KMM VA Range: {:#x} - {:#x}", k_base.value, k_top.value);
     
@@ -207,9 +200,13 @@ void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_h
     // 6.05 Populate Page Queues
     // All physical pages managed by the PageDescriptorArray must be placed into the Free queue.
     FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Populating page queues...");
-    for (usize i = 0; i < pd_array_inst->TotalPages(); ++i) {
-        PageDescriptor& desc = pd_array_inst->Get(Pfn{pd_array_inst->BasePfn().value + i});
-        kmm_inst->GetQueues().EnqueueFree(&desc);
+    {
+        auto& free_queue = kmm_inst->GetQueues().FreeQueue();
+        FoundationKitCxxStl::Sync::UniqueLock guard(free_queue.m_lock);
+        for (usize i = 0; i < pd_array_inst->TotalPages(); ++i) {
+            PageDescriptor& desc = pd_array_inst->Get(Pfn{pd_array_inst->BasePfn().value + i});
+            free_queue.EnqueueUnlocked(&desc);
+        }
     }
     
     // 6.1 Configure Memory Pressure Manager
@@ -222,8 +219,10 @@ void MemoryManager::Initialize(limine_memmap_response* memmap_response, limine_h
     // 7. Setup Global Heap Allocator
     FK_LOG_INFO("ceryx::mm::MemoryManager::Initialize: Initializing Global Heap Allocator...");
     
-    // Allocate 128MB for the kernel heap
-    constexpr usize kHeapInitialSize = 128 * 1024 * 1024;
+    // Allocate 16MB for the kernel heap initially.
+    // BuddyAllocator requires naturally aligned power-of-two blocks for large allocations.
+    // 128MB might fail if physical memory is fragmented early on.
+    constexpr usize kHeapInitialSize = 16 * 1024 * 1024;
     constexpr usize kHeapInitialPages = kHeapInitialSize / kPageSize;
     
     auto heap_base_res = kmm_inst->AllocateKernel(kHeapInitialPages, RegionFlags::Writable | RegionFlags::Readable, RegionType::Generic);
