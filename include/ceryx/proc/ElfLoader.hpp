@@ -72,13 +72,28 @@ public:
             return Unexpected<int>(-ENOEXEC); 
         }
 
-        // Apply load bias only if it's a dynamic ELF (PIE) or if explicitly requested and safe.
-        // For simplicity, we apply it if provided.
-        uptr effective_bias = (header.e_type == 3) ? load_bias : 0;
-        if (header.e_type == 2 && load_bias != 0) {
-            // Static executable but bias provided? Usually an error unless specifically handled.
-            // We'll ignore the bias for ET_EXEC.
+        // Determine effective load bias.
+        //
+        // ET_EXEC (type 2): segments have absolute virtual addresses baked in
+        //   by the linker. No bias — the binary must be loaded exactly where
+        //   it says. Ignore any caller-supplied bias.
+        //
+        // ET_DYN (type 3): PIE or shared object. Segments start at 0 and are
+        //   relocated at load time. If the caller supplies a bias, use it.
+        //   If not (e.g. execve path), apply a canonical default so that the
+        //   first segment doesn't land at virtual address 0 — which is the
+        //   null page and cannot be mapped with MAP_FIXED.
+        //
+        // Any other type: reject.
+        uptr effective_bias;
+        if (header.e_type == 2) {          // ET_EXEC
             effective_bias = 0;
+        } else if (header.e_type == 3) {   // ET_DYN / PIE
+            // Default PIE base: 0x400000 (matches the bias used by Process::Spawn
+            // and is above the null-page guard region on x86_64).
+            effective_bias = (load_bias != 0) ? load_bias : 0x400000ULL;
+        } else {
+            return Unexpected<int>(-ENOEXEC);
         }
 
         auto prev_cr3 = FoundationKitPlatform::Amd64::ControlRegs::ReadCr3();
@@ -94,6 +109,17 @@ public:
                 u64 page_aligned_vaddr = vaddr & ~0xFFFULL;
                 u64 padding = vaddr - page_aligned_vaddr;
                 u64 mem_size = (phdr.p_memsz + padding + 0xFFF) & ~0xFFFULL;
+
+                // Guard: never map the null page. A segment landing at VA 0
+                // after bias application means the ELF is malformed or the
+                // bias is wrong. Reject the load rather than panic in FK.
+                if (page_aligned_vaddr == 0) {
+                    FK_LOG_ERR("ElfLoader: PT_LOAD segment maps to VA 0 "
+                               "(p_vaddr={:#x} bias={:#x}) — rejecting",
+                               phdr.p_vaddr, effective_bias);
+                    FoundationKitPlatform::Amd64::ControlRegs::WriteCr3(prev_cr3);
+                    return Unexpected<int>(-ENOEXEC);
+                }
 
                 auto map_res = proc.GetAddressSpace().GetInner().MapAnonymous(
                     FoundationKitMemory::VirtualAddress{page_aligned_vaddr}, mem_size,

@@ -40,13 +40,9 @@ void Reaper::ThreadFunc(uptr) noexcept {
             auto* node   = local_dead.PopFront();
             auto* thread = ContainerOf<Thread, &Thread::run_node>(node);
 
-            FK_LOG_INFO("Reaper: Reclaiming thread {} (Process {}), whats next for Ceryx?",
+            FK_LOG_INFO("Reaper: Reclaiming thread {} (Process {})",
                 thread->GetId(),
                 thread->GetProcess() ? thread->GetProcess()->GetPid() : 0ULL);
-
-            // The Process lifecycle is managed separately:
-            //   sys_exit → Process::Exit() → zombie state → waitpid → Process::Reap()
-            // The Reaper is ONLY responsible for freeing the kernel Thread object.
             delete thread;
         }
 

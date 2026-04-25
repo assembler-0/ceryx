@@ -10,7 +10,7 @@ add_executable(init.elf
 )
 
 # Only apply freestanding flags to C files
-set_source_files_properties(init.c PROPERTIES COMPILE_FLAGS "-ffreestanding -nostdlib -fno-stack-protector -fPIE -m64")
+set_source_files_properties(init.c PROPERTIES COMPILE_FLAGS "-ffreestanding -nostdlib -fno-stack-protector -m64")
 
 target_link_options(init.elf PRIVATE
     -nostdlib

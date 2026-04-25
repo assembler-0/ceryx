@@ -2,6 +2,7 @@
 #include <ceryx/proc/Thread.hpp>
 #include <ceryx/proc/Process.hpp>
 #include <ceryx/proc/Scheduler.hpp>
+#include <ceryx/proc/Reaper.hpp>
 #include <ceryx/cpu/Idt.hpp>
 #include <FoundationKitCxxStl/Base/Logger.hpp>
 #include <FoundationKitMemory/Core/MemoryOperations.hpp>
@@ -73,7 +74,7 @@ void Signal::DoPendingSignals(cpu::InterruptFrame* frame) {
     auto* thread = Scheduler::GetCurrentThread();
     if (!thread) return;
 
-    // Ensure we are returning to user-space
+    // Only deliver signals when returning to user-space.
     if ((frame->cs & 3) == 0) return;
 
     u64 pending = thread->PendingSignals() & ~thread->BlockedSignals();
@@ -82,36 +83,57 @@ void Signal::DoPendingSignals(cpu::InterruptFrame* frame) {
     auto* process = thread->GetProcess();
     if (!process) return;
 
+    // Do not deliver signals to a zombie or already-terminated process.
+    // This prevents double-delivery when _exit() is called from a signal handler:
+    //   1. SIGSEGV fires → handler runs → _exit(0) → process->Exit() → zombie
+    //   2. On the next interrupt return, DoPendingSignals is called again.
+    //      Without this guard, the pending bit (set by a concurrent fault during
+    //      SetupFrame) would trigger a second delivery on the zombie process.
+    if (process->IsZombie()) return;
+    if (thread->State() == ThreadState::Terminated) return;
+
     for (int i = 1; i < NSIG; ++i) {
-        if (pending & (1ULL << (i - 1))) {
-            // Peek at the signal
-            const auto& action = process->GetSignalAction(i);
-            
-            if (action.sa_handler == SIG_IGN) {
-                thread->PendingSignals() &= ~(1ULL << (i - 1));
-                continue;
-            }
-            
-            if (action.sa_handler == SIG_DFL) {
-                // Default actions
-                if (i == SIGKILL || i == SIGSEGV || i == SIGILL || i == SIGFPE) {
-                    FK_LOG_ERR("Signal: Process {} terminated by signal {}", process->GetPid(), i);
-                    process->Destroy();
-                    return; 
-                }
-                // Many defaults are IGN
-                thread->PendingSignals() &= ~(1ULL << (i - 1));
-                continue;
-            }
+        if (!(pending & (1ULL << (i - 1)))) continue;
 
-            // Clear pending bit BEFORE setup to prevent infinite recursion if SetupFrame faults
-            thread->PendingSignals() &= ~(1ULL << (i - 1));
+        // Clear the pending bit first — prevents re-delivery if we fault below.
+        thread->PendingSignals() &= ~(1ULL << (i - 1));
 
-            // Handler case
-            SetupFrame(frame, i, action);
-            
-            return; // Deliver one signal at a time
+        const auto& action = process->GetSignalAction(i);
+
+        if (action.sa_handler == SIG_IGN) {
+            continue;
         }
+
+        if (action.sa_handler == SIG_DFL) {
+            // Default action for fatal signals: exit the process.
+            // Use Exit() → zombie → waitpid, NOT Destroy() (which is an
+            // immediate teardown that leaves the thread running with a freed
+            // process pointer and destroyed address space, causing a GPF on
+            // the iretq back to userspace).
+            if (i == SIGKILL || i == SIGSEGV || i == SIGILL ||
+                i == SIGFPE  || i == SIGBUS  || i == SIGABRT) {
+                FK_LOG_ERR("Signal: Process {} terminated by signal {}", process->GetPid(), i);
+
+                // Transition process to zombie and wake any waiting parent.
+                // The address space is NOT freed here — it stays alive until
+                // the thread is fully off the CPU and the Reaper runs.
+                process->Exit(-(i));
+
+                // Mark this thread as terminated and hand it to the Reaper.
+                // Scheduler::Yield() switches away and never returns here,
+                // so we never iretq back into the now-zombie address space.
+                thread->SetState(ThreadState::Terminated);
+                Reaper::Enqueue(thread);
+                Scheduler::Yield(); // Does not return.
+                return;
+            }
+            // All other default actions are ignore.
+            continue;
+        }
+
+        // User-installed handler — set up the signal frame and return to it.
+        SetupFrame(frame, i, action);
+        return; // Deliver one signal at a time.
     }
 }
 

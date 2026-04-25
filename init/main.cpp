@@ -20,10 +20,14 @@ using namespace FoundationKitPlatform::Amd64;
 #include <ceryx/fs/ramfs/RamFs.hpp>
 #include <ceryx/fs/CpioLoader.hpp>
 #include <ceryx/fs/Vfs.hpp>
+#include <ceryx/fs/Stat.hpp>
 #include <ceryx/proc/ElfLoader.hpp>
 #include <ceryx/proc/Process.hpp>
+#include <ceryx/proc/Signal.hpp>
 #include <ceryx/cpu/Syscall.hpp>
+#include <ceryx/fs/pseudo/PseudoFs.hpp>
 #include <drivers/debugcon.hpp>
+#include <FoundationKitMemory/Core/MemoryOperations.hpp>
 
 // Global VFS Root
 FoundationKitCxxStl::RefPtr<ceryx::fs::Vnode> g_vfs_root;
@@ -85,9 +89,106 @@ extern "C" void start_kernel() {
     );
     FK_LOG_INFO("ceryx::start_kernel: VFS root directory ('/') instantiated.");
 
+    // ── /dev ─────────────────────────────────────────────────────────────────
+    // Create /dev directory and populate standard character devices.
+    {
+        auto dev_res = g_vfs_root->ops->Mkdir(*g_vfs_root, "dev");
+        FK_BUG_ON(!dev_res, "ceryx::start_kernel: failed to create /dev");
+        auto& dev_dir = *static_cast<ceryx::fs::ramfs::RamFsNode*>(dev_res.Value().Get());
+
+        // /dev/null — reads return 0 bytes, writes are silently discarded
+        auto null_node = RefPtr<ceryx::fs::pseudo::PseudoFsNode>(
+            new ceryx::fs::pseudo::PseudoFsNode(
+                ceryx::fs::pseudo::PseudoFsOpsImpl::GetOps(),
+                "null",
+                [](void* /*buf*/, usize /*size*/, usize /*off*/) noexcept
+                    -> FoundationKitCxxStl::Expected<usize, int> { return usize{0}; },
+                [](const void* /*buf*/, usize size, usize /*off*/) noexcept
+                    -> FoundationKitCxxStl::Expected<usize, int> { return size; }
+            ));
+        null_node->type = ceryx::fs::VnodeType::CharDevice;
+        dev_dir.InsertChild(RefPtr<ceryx::fs::Vnode>(null_node));
+
+        // /dev/zero — reads return zero-filled bytes, writes are discarded
+        auto zero_node = RefPtr<ceryx::fs::pseudo::PseudoFsNode>(
+            new ceryx::fs::pseudo::PseudoFsNode(
+                ceryx::fs::pseudo::PseudoFsOpsImpl::GetOps(),
+                "zero",
+                [](void* buf, usize size, usize /*off*/) noexcept
+                    -> FoundationKitCxxStl::Expected<usize, int> {
+                    FoundationKitMemory::MemoryZero(buf, size);
+                    return size;
+                },
+                [](const void* /*buf*/, usize size, usize /*off*/) noexcept
+                    -> FoundationKitCxxStl::Expected<usize, int> { return size; }
+            ));
+        zero_node->type = ceryx::fs::VnodeType::CharDevice;
+        dev_dir.InsertChild(RefPtr<ceryx::fs::Vnode>(zero_node));
+
+        // /dev/tty — writes go to framebuffer + debugcon, reads return EOF
+        auto tty_node = RefPtr<ceryx::fs::pseudo::PseudoFsNode>(
+            new ceryx::fs::pseudo::PseudoFsNode(
+                ceryx::fs::pseudo::PseudoFsOpsImpl::GetOps(),
+                "tty",
+                [](void* /*buf*/, usize /*size*/, usize /*off*/) noexcept
+                    -> FoundationKitCxxStl::Expected<usize, int> { return usize{0}; },
+                [](const void* buffer, usize size, usize /*off*/) noexcept
+                    -> FoundationKitCxxStl::Expected<usize, int> {
+                    const char* data = static_cast<const char*>(buffer);
+                    for (usize i = 0; i < size; ++i) {
+                        linearfb_console_putc(data[i]);
+                        debugcon_putc(data[i]);
+                    }
+                    return size;
+                }
+            ));
+        tty_node->type = ceryx::fs::VnodeType::CharDevice;
+        dev_dir.InsertChild(RefPtr<ceryx::fs::Vnode>(tty_node));
+
+        FK_LOG_INFO("ceryx::start_kernel: /dev populated (null, zero, tty).");
+    }
+
+    // ── /proc ─────────────────────────────────────────────────────────────────
+    // Minimal procfs: /proc/version for now.
+    {
+        auto proc_res = g_vfs_root->ops->Mkdir(*g_vfs_root, "proc");
+        FK_BUG_ON(!proc_res, "ceryx::start_kernel: failed to create /proc");
+        auto& proc_dir = *static_cast<ceryx::fs::ramfs::RamFsNode*>(proc_res.Value().Get());
+
+        // /proc/version — Linux-compatible version string
+        auto version_node = RefPtr<ceryx::fs::pseudo::PseudoFsNode>(
+            new ceryx::fs::pseudo::PseudoFsNode(
+                ceryx::fs::pseudo::PseudoFsOpsImpl::GetOps(),
+                "version",
+                [](void* buf, usize size, usize off) noexcept
+                    -> FoundationKitCxxStl::Expected<usize, int> {
+                    static constexpr char kVersion[] =
+                        "Linux version 6.1.0 (ceryx-kernel) (clang) #1\n";
+                    static constexpr usize kLen = sizeof(kVersion) - 1;
+                    if (off >= kLen) return usize{0};
+                    usize to_copy = kLen - off;
+                    if (to_copy > size) to_copy = size;
+                    FoundationKitMemory::MemoryCopy(buf,
+                        reinterpret_cast<const void*>(kVersion + off), to_copy);
+                    return to_copy;
+                },
+                nullptr
+            ));
+        proc_dir.InsertChild(RefPtr<ceryx::fs::Vnode>(version_node));
+
+        FK_LOG_INFO("ceryx::start_kernel: /proc populated (version).");
+    }
+
+    // ── Standard directories ──────────────────────────────────────────────────
+    // Pre-create so the initrd CPIO can populate them without needing mkdir.
+    g_vfs_root->ops->Mkdir(*g_vfs_root, "sbin");
+    g_vfs_root->ops->Mkdir(*g_vfs_root, "bin");
+    g_vfs_root->ops->Mkdir(*g_vfs_root, "tmp");
+    g_vfs_root->ops->Mkdir(*g_vfs_root, "etc");
+
     ceryx::cpu::Syscall::Initialize();
     ceryx::cpu::ApicTimer::Periodic(10000000);
-
+    
     // Load Initrd
     auto* mod_res = get_module_request()->response;
     if (mod_res && mod_res->module_count > 0) {
@@ -97,8 +198,6 @@ extern "C" void start_kernel() {
         ceryx::fs::CpioLoader::Populate(g_vfs_root, initrd->address, initrd->size);
     }
 
-#include <ceryx/fs/pseudo/PseudoFs.hpp>
-#include <drivers/debugcon.hpp>
     // Launch /sbin/init
     auto init_node_res = ceryx::fs::Vfs::PathToVnode(g_vfs_root, "/sbin/init");
     if (init_node_res) {
@@ -109,13 +208,16 @@ extern "C" void start_kernel() {
             auto* init_proc = init_spawn_res.Value();
             
             // Create stdout pseudo-node for the terminal
+            // Writes go to both the framebuffer console and the debug port so
+            // output is visible regardless of which output path is active.
             auto stdout_vnode = RefPtr<ceryx::fs::Vnode>(new ceryx::fs::pseudo::PseudoFsNode(
                 ceryx::fs::pseudo::PseudoFsOpsImpl::GetOps(),
                 "stdout",
-                nullptr, // No read
+                nullptr, // No read on stdout
                 [](const void* buffer, usize size, usize /*offset*/) noexcept -> Expected<usize, int> {
                     const char* data = static_cast<const char*>(buffer);
                     for (usize i = 0; i < size; ++i) {
+                        linearfb_console_putc(data[i]);
                         debugcon_putc(data[i]);
                     }
                     return size;

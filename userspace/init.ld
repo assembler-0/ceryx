@@ -9,7 +9,12 @@ PHDRS
 
 SECTIONS
 {
-    . = 0x0;
+    /*
+     * Start at 0x400000 — the canonical user-space text base on x86_64.
+     * Virtual address 0x0 is the null page and cannot be mapped by the kernel.
+     * This matches the default layout produced by ld for static ET_EXEC binaries.
+     */
+    . = 0x400000;
 
     .text : {
         *(.text .text.*)

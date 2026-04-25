@@ -17,12 +17,15 @@ using PseudoWriteCallback = Expected<usize, int> (*)(const void* buffer, usize s
 
 class PseudoFsNode : public Vnode {
 public:
-    StringView name;
     PseudoReadCallback read_cb;
     PseudoWriteCallback write_cb;
 
-    PseudoFsNode(const VnodeOps* o, StringView n, PseudoReadCallback r_cb, PseudoWriteCallback w_cb = nullptr) noexcept
-        : Vnode(VnodeType::Regular, o), name(n), read_cb(r_cb), write_cb(w_cb) {}
+    PseudoFsNode(const VnodeOps* o, StringView node_name,
+                 PseudoReadCallback r_cb, PseudoWriteCallback w_cb = nullptr) noexcept
+        : Vnode(VnodeType::Regular, o), read_cb(r_cb), write_cb(w_cb) {
+        // Store name in the base Vnode::name field.
+        this->name = node_name;
+    }
 };
 
 struct PseudoFsOpsImpl {
@@ -64,13 +67,16 @@ struct PseudoFsOpsImpl {
 
     static const VnodeOps* GetOps() noexcept {
         static const VnodeOps ops = {
-            .Read = PseudoFsOpsImpl::Read,
-            .Write = PseudoFsOpsImpl::Write,
-            .Lookup = PseudoFsOpsImpl::Lookup,
-            .Create = PseudoFsOpsImpl::Create,
-            .Mkdir = PseudoFsOpsImpl::Mkdir,
-            .Mknod = PseudoFsOpsImpl::Mknod,
+            .Read    = PseudoFsOpsImpl::Read,
+            .Write   = PseudoFsOpsImpl::Write,
+            .Lookup  = PseudoFsOpsImpl::Lookup,
+            .Create  = PseudoFsOpsImpl::Create,
+            .Mkdir   = PseudoFsOpsImpl::Mkdir,
+            .Mknod   = PseudoFsOpsImpl::Mknod,
+            .Open    = nullptr,
+            .Close   = nullptr,
             .Destroy = PseudoFsOpsImpl::Destroy,
+            .Iterate = nullptr,
         };
         return &ops;
     }

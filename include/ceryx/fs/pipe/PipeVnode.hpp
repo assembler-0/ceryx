@@ -52,15 +52,16 @@ private:
     }
 
     static constexpr VnodeOps s_ops = {
-        .Read = Read,
-        .Write = Write,
-        .Lookup = nullptr,
-        .Create = nullptr,
-        .Mkdir = nullptr,
-        .Mknod = nullptr,
-        .Open = Open,
-        .Close = Close,
-        .Destroy = Destroy
+        .Read    = Read,
+        .Write   = Write,
+        .Lookup  = nullptr,
+        .Create  = nullptr,
+        .Mkdir   = nullptr,
+        .Mknod   = nullptr,
+        .Open    = Open,
+        .Close   = Close,
+        .Destroy = Destroy,
+        .Iterate = nullptr,
     };
 };
 

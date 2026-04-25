@@ -20,14 +20,6 @@ namespace {
 constexpr u32 kMaxPid = 32768;
 static FoundationKitCxxStl::Structure::AtomicBitmap<kMaxPid> s_pid_bitmap;
 
-/// Mark `pid` as in-use. Returns false if already allocated.
-bool PidMark(u32 pid) noexcept {
-    if (pid >= kMaxPid) return false;
-    if (s_pid_bitmap.Test(pid)) return false;
-    s_pid_bitmap.Set(pid);
-    return true;
-}
-
 /// Release `pid` back to the pool.
 void PidFree(u32 pid) noexcept {
     // PID 0 and PID 1 (init) are never recycled.
@@ -76,9 +68,10 @@ Expected<Process*, int> Process::Spawn(RefPtr<fs::Vnode> root, StringView path) 
     if (!proc_res) return Unexpected<int>(-ENOMEM);
     Process* p = proc_res.Value();
 
-    // Map the PIE executable at 0x400000 (bias). 
-    // Since init.ld base is 0, this results in the same layout but with kernel-controlled placement.
-    auto load_res = ElfLoader::Load(*p, *vnode, 0x400000);
+    // Let ElfLoader determine the correct bias:
+    //   ET_EXEC → bias = 0 (absolute addresses)
+    //   ET_DYN  → bias = 0x400000 (canonical PIE base, applied by loader)
+    auto load_res = ElfLoader::Load(*p, *vnode);
     if (!load_res) {
         p->Destroy();
         return Unexpected<int>(load_res.Error());
@@ -117,12 +110,17 @@ Expected<Process*, int> Process::Fork(cpu::InterruptFrame* regs) noexcept {
         return Unexpected<int>(-ENOMEM);
     }
 
-    // 4. Clone FD table: each FileDescription gets an extra reference.
-    m_fd_table.ForEach([&](usize fd, fs::FileDescription& file) {
-        file.AddRef();
-        (void)child->m_fd_table.Store(static_cast<u32>(fd), &file);
-    });
-    child->m_next_fd = m_next_fd;
+    // 4. Clone FD table: each slot gets a copy of the RefPtr (bumps refcount).
+    if (!child->m_fd_table.Resize(m_fd_table.Size())) {
+        m_children.Remove(&child->child_node);
+        child->Reap();
+        return Unexpected<int>(-ENOMEM);
+    }
+    for (u32 fd = 0; fd < static_cast<u32>(m_fd_table.Size()); ++fd) {
+        if (m_fd_table[fd].HasValue()) {
+            child->m_fd_table[fd] = m_fd_table[fd].Value(); // RefPtr copy → AddRef
+        }
+    }
 
     // 5. Clone signal disposition table.
     for (int i = 0; i < NSIG; ++i) {
@@ -157,14 +155,17 @@ Expected<Process*, int> Process::Fork(cpu::InterruptFrame* regs) noexcept {
 
 void Process::Exit(int status) noexcept {
     // 1. Close all open file descriptors.
-    m_fd_table.ForEach([&](usize /*fd*/, fs::FileDescription& file) {
-        file.Release();
-    });
+    for (u32 fd = 0; fd < static_cast<u32>(m_fd_table.Size()); ++fd) {
+        m_fd_table[fd].Reset();
+    }
     m_fd_table.Clear();
 
     // 2. Transition to Zombie.
     m_state       = ProcessState::Zombie;
     m_exit_status = status;
+
+    FK_LOG_INFO("ceryx::proc: PID {} → Zombie (status={}, parent={})",
+                m_pid, status, m_parent ? m_parent->m_pid : 0ULL);
 
     // 3. Wake parent blocked in waitpid (uses `this` as the channel).
     if (m_parent) {
@@ -184,9 +185,9 @@ void Process::Reap() noexcept {
 void Process::Destroy() noexcept {
     // Immediate teardown: error/early-exit paths. PID freed if non-init.
     PidFree(static_cast<u32>(m_pid));
-    m_fd_table.ForEach([&](usize /*fd*/, fs::FileDescription& file) {
-        file.Release();
-    });
+    for (u32 fd = 0; fd < static_cast<u32>(m_fd_table.Size()); ++fd) {
+        m_fd_table[fd].Reset();
+    }
     m_fd_table.Clear();
     m_address_space->Destroy();
     delete this;
@@ -197,11 +198,18 @@ void Process::Destroy() noexcept {
 Process* Process::FindChild(u64 pid) noexcept {
     // pid == 0 means "any child".
     auto* node = m_children.Begin();
+    usize idx = 0;
     while (node != m_children.End()) {
         auto* child = ContainerOf<Process, &Process::child_node>(node);
+        FK_LOG_INFO("ceryx::proc: FindChild({}) on PID {} — child[{}] PID={} state={}",
+                    pid, m_pid, idx, child->m_pid,
+                    static_cast<int>(child->m_state));
         if (pid == 0 || child->m_pid == pid) return child;
         node = node->next;
+        ++idx;
     }
+    FK_LOG_INFO("ceryx::proc: FindChild({}) on PID {} — not found, children_size={}",
+                pid, m_pid, m_children.Size());
     return nullptr;
 }
 
@@ -214,31 +222,47 @@ void Process::RemoveChild(Process* child) noexcept {
 Expected<u32, int> Process::AllocateFd(RefPtr<fs::FileDescription> file) noexcept {
     if (!file) return Unexpected<int>(-EBADF);
 
-    u32 fd = m_next_fd++;
+    // Scan for the first empty slot (O(n), acceptable for kMaxFds=1024).
+    for (u32 fd = 0; fd < kMaxFds; ++fd) {
+        // Grow the vector if needed.
+        if (fd >= m_fd_table.Size()) {
+            if (!m_fd_table.Resize(fd + 1)) return Unexpected<int>(-ENOMEM);
+        }
 
-    file->AddRef();
-    if (!m_fd_table.Store(fd, file.Get())) {
-        file->Release();
-        return Unexpected<int>(-ENOMEM);
+        if (!m_fd_table[fd].HasValue()) {
+            m_fd_table[fd] = file;
+            return fd;
+        }
     }
 
+    return Unexpected<int>(-EMFILE);
+}
+
+Expected<u32, int> Process::AllocateFdAt(u32 fd, RefPtr<fs::FileDescription> file) noexcept {
+    if (!file) return Unexpected<int>(-EBADF);
+    if (fd >= kMaxFds) return Unexpected<int>(-EBADF);
+
+    // Grow the vector if needed.
+    if (fd >= m_fd_table.Size()) {
+        if (!m_fd_table.Resize(fd + 1)) return Unexpected<int>(-ENOMEM);
+    }
+
+    // Close any existing description at this slot (dup2 semantics).
+    m_fd_table[fd].Reset();
+
+    // Install the new description.
+    m_fd_table[fd] = file;
     return fd;
 }
 
 RefPtr<fs::FileDescription> Process::GetFd(u32 fd) noexcept {
-    fs::FileDescription* desc = m_fd_table.Load(fd);
-    if (!desc) return nullptr;
-
-    desc->AddRef();
-    return RefPtr<fs::FileDescription>(desc);
+    if (fd >= m_fd_table.Size()) return nullptr;
+    return m_fd_table[fd].HasValue() ? m_fd_table[fd].Value() : RefPtr<fs::FileDescription>(nullptr);
 }
 
 void Process::FreeFd(u32 fd) noexcept {
-    fs::FileDescription* desc = m_fd_table.Load(fd);
-    if (desc) {
-        m_fd_table.Erase(fd);
-        desc->Release();
-    }
+    if (fd >= m_fd_table.Size()) return;
+    m_fd_table[fd].Reset();
 }
 
 } // namespace ceryx::proc

@@ -2,7 +2,8 @@
 
 #include <ceryx/mm/UserAddressSpace.hpp>
 #include <FoundationKitCxxStl/Base/Types.hpp>
-#include <FoundationKitCxxStl/Structure/XArray.hpp>
+#include <FoundationKitCxxStl/Base/Optional.hpp>
+#include <FoundationKitCxxStl/Base/Vector.hpp>
 #include <FoundationKitCxxStl/Structure/IntrusiveDoublyLinkedList.hpp>
 #include <ceryx/fs/FileDescription.hpp>
 #include <ceryx/fs/Vnode.hpp>
@@ -78,6 +79,9 @@ public:
     /// @brief Remove a child from the children list (called after Reap).
     void RemoveChild(Process* child) noexcept;
 
+    /// @brief Number of direct children.
+    [[nodiscard]] usize ChildCount() const noexcept { return m_children.Size(); }
+
     /// @brief Intrusive node for being on a parent's m_children list.
     IntrusiveDoublyLinkedListNode child_node;
 
@@ -89,8 +93,20 @@ public:
 
     // ── File descriptors ─────────────────────────────────────────────────────
 
+    /// @brief Allocate the next available FD slot and store the FileDescription.
+    /// @return The allocated FD number, or -EMFILE if the table is full.
     Expected<u32, int> AllocateFd(RefPtr<fs::FileDescription> file) noexcept;
-    RefPtr<fs::FileDescription> GetFd(u32 fd) noexcept;
+
+    /// @brief Allocate a specific FD number (for dup2 / O_CLOEXEC paths).
+    /// Closes any existing description at that slot first.
+    /// @return 0 on success, -EBADF if fd >= kMaxFds.
+    Expected<u32, int> AllocateFdAt(u32 fd, RefPtr<fs::FileDescription> file) noexcept;
+
+    /// @brief Retrieve the FileDescription for an open FD.
+    /// @return A valid RefPtr, or null if the FD is not open.
+    [[nodiscard]] RefPtr<fs::FileDescription> GetFd(u32 fd) noexcept;
+
+    /// @brief Close an FD slot. No-op if already closed.
     void FreeFd(u32 fd) noexcept;
 
     // ── Filesystem context ───────────────────────────────────────────────────
@@ -109,6 +125,11 @@ public:
         return m_signal_actions[sig - 1];
     }
 
+    // ── FD table limits ──────────────────────────────────────────────────────
+
+    /// @brief Hard limit on open file descriptors per process (matches Linux default).
+    static constexpr u32 kMaxFds = 1024;
+
 private:
     Process(u64 pid, mm::UserAddressSpace* uas,
             RefPtr<fs::Vnode> root, RefPtr<fs::Vnode> cwd) noexcept
@@ -120,8 +141,23 @@ private:
     mm::UserAddressSpace* m_address_space;
     RefPtr<fs::Vnode>     m_root;
     RefPtr<fs::Vnode>     m_cwd;
-    Structure::XArray<fs::FileDescription> m_fd_table;
-    u32 m_next_fd{0};
+
+    // ── FD table ─────────────────────────────────────────────────────────────
+    //
+    // Previously XArray<fs::FileDescription> — that stored raw T* pointers with
+    // no ownership, causing the RefPtr passed to AllocateFd to destruct at end
+    // of scope and immediately free the FileDescription.
+    //
+    // Now: a flat Vector of Optional<RefPtr<FileDescription>>.
+    //   - Optional<RefPtr<...>> distinguishes "slot never opened" (empty Optional)
+    //     from "slot closed" (Optional reset to NullOpt) — both are empty, which
+    //     is correct: a closed FD is indistinguishable from one never opened.
+    //   - RefPtr provides the ownership and thread-safe refcount.
+    //   - Vector grows on demand; slots are never shrunk to keep FD numbers stable.
+    //   - AllocateFd scans for the first empty slot (O(n), acceptable for kMaxFds=1024).
+    //
+    Vector<Optional<RefPtr<fs::FileDescription>>> m_fd_table;
+
     sigaction m_signal_actions[NSIG]{};
 
     // Process tree state.

@@ -44,6 +44,18 @@ struct VnodeOps {
 
     /// @brief Optional cleanup for the vnode when it's being destroyed.
     void (*Destroy)(Vnode& vnode) noexcept;
+
+    /// @brief Iterate directory entries starting at cookie `offset`.
+    ///
+    /// @param dir     The directory vnode.
+    /// @param buf     Caller-supplied buffer for linux_dirent64 records.
+    /// @param buf_len Size of buf in bytes.
+    /// @param offset  Entry index to start from (0 = beginning).
+    /// @return Number of bytes written into buf, 0 if no more entries,
+    ///         or a negative errno on error.
+    ///
+    /// @note  Nullable — if nullptr, getdents64 returns 0 (empty directory).
+    Expected<usize, int> (*Iterate)(Vnode& dir, void* buf, usize buf_len, usize offset) noexcept;
 };
 
 /// @brief Represents a file system node.
@@ -55,6 +67,10 @@ public:
     // Generic metadata
     usize size{0};
     u32 permissions{0};
+
+    /// @brief Node name within its parent directory.
+    /// Set by the filesystem at creation time. Not null-terminated — use StringView.
+    StringView name;
 
     // No virtual methods to avoid vtable issues in early boot.
     constexpr Vnode(VnodeType t, const VnodeOps* o) noexcept 
